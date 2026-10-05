@@ -16,7 +16,8 @@
    gateMode 'mark'|'manual' — способ ввода расстояний; markStep — шаг разметки, м (0 — не задан);
    camOffset — метры от камеры до первых ворот (по умолчанию 0; нужно для подписи дистанции);
    calib {ok,a,b,c,rms,vNear,vFar,sMax} или null (ok=false при ошибке; rms — метры; vNear=1; sMax=1,5·s последних ворот; vFar=max(0,vOfS(sMax)));
-   lanes {borders:[[{x,y},{x,y}],...], names:[], types:[]};
+   lanes {borders:[[{x,y},{x,y}],...], names:[], types:[]}: N=names.length (1..3, по умолчанию 2); borders — N+1 линий слева направо,
+     каждая — две точки [ближняя, дальняя], линия продолжена до краёв кадра; types[i] ∈ CFG.laneTypes ('обычная'|'автобусная'|'обочина');
    limit — км/ч, по умолчанию 50;
    shift {dx:0,dy:0,ok:true,state:'ok'} — сдвиг кадра относительно калибровочного (нормированный);
    blobs [], tracks [], passes [].
@@ -28,12 +29,17 @@
      calcD() — пересчитать d ворот по режиму ввода;
    showLoupe(x,y) — лупа ×CFG.loupeZoom: круглое окно в левом верхнем углу сцены с перекрестием, показывает участок кадра
      вокруг точки (x,y) (норм. координаты кадра, как в toFrame); hideLoupe() — убрать. Зовут на время перетаскивания точек;
-   laneAt(x,v) → индекс полосы или −1 (пока заглушка, реализует часть 4);
+   laneAt(x,v) → индекс полосы или −1 (вне полос, по границам без запаса);
+   borderX(i,v) → x границы i на строке v (норм.; линия через две точки продолжена за них);
+   roiMask(w,h) → Uint8Array w×h: 1 — область обнаружения (между крайними границами + запас CFG.roiMargin·ширина полосы; только ниже vFar, если calib.ok);
+   laneMasks(w,h) → Uint8Array w×h: 0 — вне полос, 1..N — номер полосы (по центрам ячеек);
+   initLanes()/setLanes(n)/laneUI() — шаг 4: начальные границы веером; смена числа полос строит границы заново, названия и типы сохраняются;
    redraw() — запросить перерисовку сцены;
    layers[] — функции (g,k): рисуют поверх кадра в пикселях кадра (g — 2D-контекст с готовым преобразованием,
      k — CSS-px на пиксель кадра; линия толщиной 2 CSS-px = lineWidth 2/k);
    toast(текст) — всплывающее сообщение; go(n) — перейти на шаг n (1..6).
-   Слои «линейка» (метки каждые CFG.rulerStep м) и «ворота» рисуются на шагах 3 и 6; ручки и перетаскивание ворот — только шаг 3.
+   Слои «линейка» (метки каждые CFG.rulerStep м) и «ворота» рисуются на шагах CFG.ctx (3, 4, 6); ручки и перетаскивание ворот — только шаг 3.
+   Полосы: заливка — первый слой (layers.unshift, под линейкой и воротами), границы и названия — сверху; шаги 4–6; точки границ и их перетаскивание — только шаг 4.
 5) Кто дописывает проект — вносит новые поля S и функции в этот комментарий.
 ВРЕМЕННО: тап по кадру показывает координаты (блок «ОТЛАДКА» в конце скрипта).
 -->
@@ -86,6 +92,7 @@ html,body{margin:0;height:100%;overflow:hidden;overscroll-behavior:none;backgrou
 .gr{display:flex;align-items:center;gap:8px;padding:3px;border:1px solid transparent;border-radius:12px}.gr.on{border-color:var(--acc)}
 .gr .btn{flex:none;width:104px;min-height:44px;padding:6px 8px;font-size:14px}
 .gd{flex:1;font-size:13px;color:var(--dim)}
+.lr{display:flex;gap:8px;margin-top:8px}.lr input,.lr select{min-height:44px;padding:0 10px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--txt);font:inherit;font-size:16px;-webkit-user-select:text;user-select:text}.lr input{flex:1;min-width:0}
 #gmsg div{margin-top:2px;font-size:14px}#gmsg .bad{color:var(--bad)}#gmsg .warn{color:var(--acc)}#gmsg .ok{color:var(--ok)}
 #lp{position:absolute;left:8px;top:8px;border-radius:50%;background:#000;box-shadow:0 0 0 2px var(--acc),0 2px 12px rgba(0,0,0,.6);pointer-events:none}
 @media(max-height:480px){.st{font-size:0}.st i{margin:0 auto}#panel{max-height:34%}}
@@ -133,6 +140,11 @@ html,body{margin:0;height:100%;overflow:hidden;overscroll-behavior:none;backgrou
       <label class="fld">расстояние от меня до первых ворот, м<input id="iOff" inputmode="decimal" autocomplete="off"></label>
       <div id="gmsg"></div>
     </section>
+    <section data-s="4">
+      <p class="hint">Каждая граница — линия из двух кружков, продолженная до краёв кадра. Тяни кружки на линии разметки: ближний — внизу, дальний — повыше. Смена числа полос сбрасывает границы.</p>
+      <div class="row"><button class="btn" id="lDn">−</button><div class="cnt" id="lN"></div><button class="btn" id="lUp">+</button></div>
+      <div id="lList"></div>
+    </section>
   </main>
   <footer id="nav">
     <button class="btn" id="bk">Назад</button>
@@ -153,7 +165,10 @@ const CFG={
   loupeZoom:4,loupeSize:120,                     // лупа: увеличение относительно экрана, диаметр окна (CSS-px)
   minSpan:10,rmsPct:5,sMaxK:1.5,eps:1e-9,        // калибровка: мин. база (м), порог невязки (%), sMax=sMaxK·s последних ворот, защита от деления на 0
   rulerStep:5,rulerMax:200,                      // линейка: шаг (м), макс. число линий
-  col:{gate:'#f2c230',sel:'#fff',ok:'#4cd3a0',ext:'#ff9f43'}   // цвета: ворота, выбранные, линейка в базе, экстраполяция
+  ctx:[3,4,6],                                   // шаги, где видны линейка и ворота
+  laneN:2,laneMin:1,laneMax:3,laneTypes:['обычная','автобусная','обочина'],   // полосы: число (старт/мин/макс), типы
+  laneApexV:1/6,laneT:[0.2,0.5],roiMargin:0.1,laneAlpha:0.3,   // веер: v точки схождения без калибровки (центр верхней трети); точки границы — доля пути от низа кадра к ней (ближняя, дальняя); запас ROI — доля ширины полосы; прозрачность заливки
+  col:{gate:'#f2c230',sel:'#fff',ok:'#4cd3a0',ext:'#ff9f43',lane:['#5ab0ff','#c78bff','#ff8fb3']}   // цвета: ворота, выбранные, линейка в базе, экстраполяция
 };
 
 /* ===== S: состояние (поля описаны в комментарии ПРАВИЛА ПРОЕКТА) ===== */
@@ -165,7 +180,7 @@ const $=id=>document.getElementById(id);
 const V=$('v'),cv=$('cv'),stage=$('stage'),info=$('info'),seek=$('seek');
 S.src.video=V;
 const STEPS=['Источник','Кадр','Ворота','Полосы','Лимит','Проверка'];
-const STUB={4:'части 4',5:'части 5',6:'части 6'};   // заглушки шагов 4–6
+const STUB={5:'части 5',6:'части 6'};   // заглушки шагов 5–6
 const layers=[],P=new Map();
 let objUrl=null,dbgPt=null,dirty=false,last={w:0,h:0},tt=0,drag=false,tap=null,prev=null;
 
@@ -189,7 +204,7 @@ const fS=(m,v)=>{const d=m.c*v+1;return(m.a*v+m.b)/(Math.abs(d)<CFG.eps?(d<0?-CF
 const fV=(m,s)=>{const d=m.a-m.c*s;return(s-m.b)/(Math.abs(d)<CFG.eps?(d<0?-CFG.eps:CFG.eps):d);};   // обратная: v(s)
 function sOfV(v){return S.calib&&S.calib.ok?fS(S.calib,v):NaN;}
 function vOfS(s){return S.calib&&S.calib.ok?fV(S.calib,s):NaN;}
-function laneAt(x,v){return -1;}  // заглушка — часть 4
+// laneAt, borderX, roiMask, laneMasks — см. раздел «Шаг 4: полосы»
 
 /* ===== Вид: сдвиг/масштаб ===== */
 function clampView(r){   // кадр не уходит с экрана; если меньше сцены — по центру
@@ -235,12 +250,12 @@ const cen=()=>{const a=[...P.values()];if(!a.length)return null;
   return{x:a.reduce((s,p)=>s+p.x,0)/a.length,y:a.reduce((s,p)=>s+p.y,0)/a.length,
     d:a.length>1?Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y):0};};
 cv.onpointerdown=e=>{
-  if(!S.cal||S.step<2||gateDown(e))return;
+  if(!S.cal||S.step<2||gateDown(e)||laneDown(e))return;
   cv.setPointerCapture(e.pointerId);P.set(e.pointerId,{x:e.clientX,y:e.clientY});
   tap=P.size===1?{x:e.clientX,y:e.clientY,t:e.timeStamp}:null;prev=cen();
 };
 cv.onpointermove=e=>{
-  if(gateMove(e)||!P.has(e.pointerId))return;
+  if(gateMove(e)||laneMove(e)||!P.has(e.pointerId))return;
   P.set(e.pointerId,{x:e.clientX,y:e.clientY});
   if(tap&&Math.hypot(e.clientX-tap.x,e.clientY-tap.y)>CFG.tapMove)tap=null;
   const c=cen(),r=cv.getBoundingClientRect(),v=S.view;
@@ -248,7 +263,7 @@ cv.onpointermove=e=>{
   v.tx+=c.x-prev.x;v.ty+=c.y-prev.y;prev=c;clampView(r);redraw();
 };
 cv.onpointerup=cv.onpointercancel=e=>{
-  if(gateUp(e)||!P.has(e.pointerId))return;
+  if(gateUp(e)||laneUp(e)||!P.has(e.pointerId))return;
   if(e.type==='pointerup'&&tap&&e.timeStamp-tap.t<CFG.tapMs)onTap(e.clientX,e.clientY);
   tap=null;P.delete(e.pointerId);prev=cen();
 };
@@ -264,7 +279,7 @@ cv.addEventListener('wheel',e=>{
 function dropFrame(){   // новый/потерянный кадр — всё, что к нему привязано, недействительно
   S.cal=null;S.fw=S.fh=0;S.view={scale:1,tx:0,ty:0};
   S.gates=[];S.calib=null;S.lanes={borders:[],names:[],types:[]};
-  S.shift={dx:0,dy:0,ok:true,state:'ok'};dbgPt=null;sel=0;gd=null;hideLoupe();
+  S.shift={dx:0,dy:0,ok:true,state:'ok'};dbgPt=null;sel=0;gd=ld=null;hideLoupe();
 }
 function freeze(){
   if(!S.src.kind||V.readyState<2||!V.videoWidth)return toast('Кадр ещё не готов — подожди секунду.');
@@ -339,6 +354,7 @@ function render(){
   $('dbg').hidden=!(fz&&dbgPt);
   if(!fz)P.clear();
   if(S.step===3&&S.cal){if(!S.gates.length)initGates();gateUI();}
+  if(S.step===4&&S.cal){if(!S.lanes.borders.length)initLanes();laneUI();}
   redraw();
 }
 $('bCam').onclick=useCam;
@@ -479,7 +495,7 @@ function recalc(){
 /* ===== Слои: линейка и ворота (шаги 3 и 6) ===== */
 const label=(g,t,x,y,col,u)=>{g.lineWidth=3*u;g.strokeStyle='rgba(0,0,0,.85)';g.strokeText(t,x,y);g.fillStyle=col;g.fillText(t,x,y);};
 layers.push((g,k)=>{   // линейка: линии каждые CFG.rulerStep м; в базе (между крайними воротами) сплошные, за ней — пунктир
-  const c=S.calib;if(!c||!c.ok||(S.step!==3&&S.step!==6))return;
+  const c=S.calib;if(!c||!c.ok||!CFG.ctx.includes(S.step))return;
   const u=1/k,st=CFG.rulerStep,sL=c.sMax/CFG.sMaxK,x0=Math.max(0,-S.view.tx/k)+6*u;
   let t=0;const gs=S.gates.map(q=>t+=q.d);   // накопленные расстояния ворот
   g.save();g.font='600 '+13*u+'px system-ui,sans-serif';g.textBaseline='bottom';g.textAlign='left';g.lineJoin='round';
@@ -493,7 +509,7 @@ layers.push((g,k)=>{   // линейка: линии каждые CFG.rulerStep 
   g.restore();
 });
 layers.push((g,k)=>{   // ворота: яркие линии с накопленным расстоянием; ручки — только на шаге 3
-  if(!S.cal||(S.step!==3&&S.step!==6))return;
+  if(!S.cal||!CFG.ctx.includes(S.step))return;
   const u=1/k,r=cv.getBoundingClientRect(),x0=Math.max(0,-S.view.tx/k)+6*u,hx=(r.width-CFG.handle-4-S.view.tx)/k;
   g.save();g.font='700 '+14*u+'px system-ui,sans-serif';g.lineJoin='round';
   let s=0;
@@ -509,6 +525,105 @@ layers.push((g,k)=>{   // ворота: яркие линии с накопле�
     g.strokeStyle=i===sel?CFG.col.sel:CFG.col.gate;g.lineWidth=3*u;g.stroke();
     g.textAlign='center';g.textBaseline='middle';g.fillStyle=CFG.col.gate;g.fillText(String(i+1),hx,y);
   });
+  g.restore();
+});
+
+/* ===== Шаг 4: полосы ===== */
+let ld=null;   // перетаскивание точки границы {id,i,j,dx,dy}
+const c01=x=>Math.min(1,Math.max(0,x)),defName=i=>'Полоса '+(i+1);
+function borderX(i,v){   // x границы i на строке v: линия через две точки (горизонтальная — x первой); NaN — нет такой границы
+  const b=S.lanes.borders[i];if(!b)return NaN;
+  const dy=b[1].y-b[0].y;
+  return Math.abs(dy)<CFG.eps?b[0].x:b[0].x+(v-b[0].y)*(b[1].x-b[0].x)/dy;
+}
+const xsAt=v=>S.lanes.borders.map((b,i)=>borderX(i,v));
+const laneIn=(xs,x)=>{for(let i=0;i<xs.length-1;i++)if(x>=xs[i]&&x<xs[i+1])return i;return -1;};
+function laneAt(x,v){return laneIn(xsAt(v),x);}
+function laneMasks(w,h){   // 0 — вне полос, 1..N — номер полосы; сетка w×h
+  const o=new Uint8Array(w*h);
+  for(let y=0;y<h;y++){const xs=xsAt((y+.5)/h);for(let x=0;x<w;x++)o[y*w+x]=laneIn(xs,(x+.5)/w)+1;}
+  return o;
+}
+function roiMask(w,h){   // 1 — область обнаружения: между крайними границами + запас CFG.roiMargin ширины полосы; ниже vFar, если есть калибровка
+  const o=new Uint8Array(w*h),n=S.lanes.names.length,c=S.calib,vt=c&&c.ok?c.vFar:0;
+  if(!n)return o;
+  for(let y=0;y<h;y++){
+    const v=(y+.5)/h;if(v<vt)continue;
+    const xs=xsAt(v),lo=xs[0],hi=xs[n],m=CFG.roiMargin*(hi-lo)/n;
+    if(!(hi>lo))continue;   // границы перекрещены (выше точки схождения)
+    for(let x=0;x<w;x++){const u=(x+.5)/w;if(u>=lo-m&&u<=hi+m)o[y*w+x]=1;}
+  }
+  return o;
+}
+function fan(n){   // веер: сходится в (0,5; vFar), без калибровки — в (0,5; CFG.laneApexV); внизу кадра границы равномерно слева направо
+  const c=S.calib,ay=c&&c.ok?c.vFar:CFG.laneApexV;
+  return Array.from({length:n+1},(_,i)=>CFG.laneT.map(t=>({x:i/n+(.5-i/n)*t,y:1+(ay-1)*t})));
+}
+function setLanes(n){   // число полос; названия и типы сохраняются, границы строятся заново
+  const L=S.lanes;n=Math.min(CFG.laneMax,Math.max(CFG.laneMin,n));
+  L.names=Array.from({length:n},(_,i)=>L.names[i]||defName(i));
+  L.types=Array.from({length:n},(_,i)=>L.types[i]||CFG.laneTypes[0]);
+  L.borders=fan(n);
+}
+function initLanes(){setLanes(CFG.laneN);}
+function laneUI(){   // перестроить панель шага 4 по S
+  const L=S.lanes,n=L.names.length,esc=t=>t.replace(/[&<>"]/g,c=>'&#'+c.charCodeAt(0)+';');
+  $('lN').textContent='Полос: '+n;$('lUp').disabled=n>=CFG.laneMax;$('lDn').disabled=n<=CFG.laneMin;
+  $('lList').innerHTML=L.names.map((t,i)=>'<div class="lr"><input data-n="'+i+'" placeholder="'+defName(i)+'" value="'+esc(t)+'" autocomplete="off"><select data-t="'+i+'">'
+    +CFG.laneTypes.map(y=>'<option'+(y===L.types[i]?' selected':'')+'>'+y+'</option>').join('')+'</select></div>').join('');
+}
+$('lList').oninput=e=>{const i=e.target.dataset.n;if(i!=null){S.lanes.names[i]=e.target.value.trim()||defName(+i);redraw();}};
+$('lList').onchange=e=>{const i=e.target.dataset.t;if(i!=null)S.lanes.types[i]=e.target.value;};
+$('lUp').onclick=()=>chgL(1);$('lDn').onclick=()=>chgL(-1);
+function chgL(d){setLanes(S.lanes.names.length+d);laneUI();redraw();}
+
+function laneDown(e){   // true — событие съедено
+  if(ld)return true;
+  if(S.step!==4||P.size)return false;
+  let bi=-1,bj=0,bd=CFG.handle*1.4;
+  S.lanes.borders.forEach((b,i)=>b.forEach((p,j)=>{const s=toScreen(p.x,p.y),d=Math.hypot(e.clientX-s.px,e.clientY-s.py);if(d<bd){bd=d;bi=i;bj=j;}}));
+  if(bi<0)return false;
+  const p=S.lanes.borders[bi][bj],s=toScreen(p.x,p.y);
+  ld={id:e.pointerId,i:bi,j:bj,dx:s.px-e.clientX,dy:s.py-e.clientY};   // dx,dy — смещение пальца от центра точки
+  cv.setPointerCapture(e.pointerId);showLoupe(p.x,p.y);redraw();return true;
+}
+function laneMove(e){
+  if(!ld||e.pointerId!==ld.id)return false;
+  const q=toFrame(e.clientX+ld.dx,e.clientY+ld.dy),p=S.lanes.borders[ld.i][ld.j];
+  p.x=c01(q.x);p.y=c01(q.y);showLoupe(p.x,p.y);redraw();return true;
+}
+function laneUp(e){if(!ld||e.pointerId!==ld.id)return false;ld=null;hideLoupe();return true;}
+
+function topV(i,j){   // верх закраски между границами i и j: vFar (если есть калибровка) или строка их пересечения в кадре
+  const c=S.calib,d0=borderX(j,0)-borderX(i,0),d1=borderX(j,1)-borderX(i,1);
+  return Math.max(c&&c.ok?c.vFar:0,d0*d1<0?d0/(d0-d1):0);
+}
+layers.unshift(g=>{   // заливка полос — первым слоем, под линейкой и воротами
+  const n=S.lanes.names.length;if(!S.cal||S.step<4||!n)return;
+  const W=S.fw,H=S.fh;
+  g.save();g.beginPath();g.rect(0,0,W,H);g.clip();g.globalAlpha=CFG.laneAlpha;
+  for(let i=0;i<n;i++){
+    const t=topV(i,i+1);
+    g.beginPath();g.moveTo(borderX(i,t)*W,t*H);g.lineTo(borderX(i,1)*W,H);g.lineTo(borderX(i+1,1)*W,H);g.lineTo(borderX(i+1,t)*W,t*H);
+    g.closePath();g.fillStyle=CFG.col.lane[i%CFG.col.lane.length];g.fill();
+  }
+  g.restore();
+});
+layers.push((g,k)=>{   // границы и названия (шаги 4–6); точки-ручки — только шаг 4
+  const L=S.lanes,n=L.names.length;if(!S.cal||S.step<4||!n)return;
+  const u=1/k,W=S.fw,H=S.fh,r=cv.getBoundingClientRect(),yb=Math.min(H,(r.height-S.view.ty)/k)-8*u;   // yb — у нижнего края (видимой части) кадра
+  g.save();g.beginPath();g.rect(0,0,W,H);g.clip();g.strokeStyle=CFG.col.sel;g.lineWidth=2*u;
+  L.borders.forEach((b,i)=>{g.beginPath();g.moveTo(borderX(i,0)*W,0);g.lineTo(borderX(i,1)*W,H);g.stroke();});
+  g.restore();
+  g.save();g.font='700 '+14*u+'px system-ui,sans-serif';g.lineJoin='round';g.textAlign='center';g.textBaseline='bottom';
+  L.names.forEach((t,i)=>label(g,t,(borderX(i,yb/H)+borderX(i+1,yb/H))/2*W,yb,CFG.col.lane[i%CFG.col.lane.length],u));
+  if(S.step===4){
+    g.textBaseline='middle';
+    L.borders.forEach((b,i)=>b.forEach(p=>{
+      g.beginPath();g.arc(p.x*W,p.y*H,CFG.handle*u,0,Math.PI*2);g.fillStyle='rgba(18,22,28,.6)';g.fill();
+      g.strokeStyle=CFG.col.sel;g.lineWidth=3*u;g.stroke();g.fillStyle=CFG.col.sel;g.fillText(String(i+1),p.x*W,p.y*H);
+    }));
+  }
   g.restore();
 });
 
