@@ -1,0 +1,342 @@
+<!--
+ПРАВИЛА ПРОЕКТА «Скоростемер». Читать перед каждой частью. Новые поля S и функции вносить СЮДА.
+1) Один файл index.html, без библиотек/CDN/внешних шрифтов; интерфейс по-русски; все пороги и константы — только в объекте CFG.
+2) Камера смотрит вдоль дороги, крен ≈ 0. Расстояние вдоль дороги s зависит только от строки кадра v:
+   s(v) = (a·v + b)/(c·v + 1). Все координаты нормированные 0..1 относительно кадра
+   (x — по ширине; v и y — по высоте, 0 — верх).
+3) Состояние — глобальный объект S:
+   mode 'wizard'|'run'; step 1..6;
+   src {kind:'camera'|'file'|null, video:<video id=v>}; fw, fh — размер кадра, px (0, пока кадра нет);
+   cal — canvas замороженного кадра (fw×fh) или null;
+   view {scale,tx,ty}: scale=1 — кадр целиком вписан в сцену (диапазон CFG.zoomMin..zoomMax);
+     tx,ty — CSS-px смещение левого верхнего угла кадра от левого верхнего угла сцены (канва #cv);
+     CSS-px на пиксель кадра k = fit·scale, где fit = min(ширина_сцены/fw, высота_сцены/fh);
+   gates [{v,d}] — снизу вверх, d — метры от предыдущих ворот;
+   calib {ok,a,b,c,rms,vNear,vFar,sMax} или null;
+   lanes {borders:[[{x,y},{x,y}],...], names:[], types:[]};
+   limit — км/ч, по умолчанию 50;
+   shift {dx:0,dy:0,ok:true,state:'ok'} — сдвиг кадра относительно калибровочного (нормированный);
+   blobs [], tracks [], passes [].
+4) Функции-контракты:
+   toFrame(clientX,clientY) → {x,y}: норм. координаты кадра по клиентским координатам (как в событиях указателя);
+   toScreen(x,y) → {px,py}: обратная к toFrame, клиентские CSS-px. До заморозки кадра обе возвращают NaN;
+   sOfV(v) → метры, vOfS(s) → строка v (пока заглушки NaN, реализует часть 3);
+   laneAt(x,v) → индекс полосы или −1 (пока заглушка, реализует часть 4);
+   redraw() — запросить перерисовку сцены;
+   layers[] — функции (g,k): рисуют поверх кадра в пикселях кадра (g — 2D-контекст с готовым преобразованием,
+     k — CSS-px на пиксель кадра; линия толщиной 2 CSS-px = lineWidth 2/k);
+   toast(текст) — всплывающее сообщение; go(n) — перейти на шаг n (1..6).
+5) Кто дописывает проект — вносит новые поля S и функции в этот комментарий.
+ВРЕМЕННО: тап по кадру показывает координаты (блок «ОТЛАДКА» в конце скрипта).
+-->
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#12161c">
+<title>Скоростемер</title>
+<style>
+:root{--bg:#12161c;--card:#1c232d;--line:#2c3643;--txt:#e7ecf2;--dim:#8b97a7;--acc:#f2c230;--ok:#4cd3a0;--bad:#ff7a7a}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+[hidden]{display:none!important}
+html,body{margin:0;height:100%;overflow:hidden;overscroll-behavior:none;background:var(--bg);color:var(--txt);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+#app{position:fixed;left:0;top:0;right:0;bottom:0;display:flex;flex-direction:column}
+#steps{display:flex;padding:calc(8px + env(safe-area-inset-top)) 6px 6px;border-bottom:1px solid var(--line)}
+.st{flex:1;text-align:center;font-size:11px;color:var(--dim)}
+.st i{display:grid;place-items:center;width:28px;height:28px;margin:0 auto 3px;border:2px solid var(--line);border-radius:50%;font:700 13px/1 system-ui,sans-serif}
+.st.on{color:var(--txt)}.st.on i{background:var(--acc);border-color:var(--acc);color:#1a1500}
+.st.done i{border-color:var(--ok);color:var(--ok)}
+#stage{position:relative;flex:1;min-height:120px;background:#000;overflow:hidden;touch-action:none}
+#v,#cv,#empty{position:absolute;left:0;top:0;width:100%;height:100%}
+#v{object-fit:contain}
+#cv{touch-action:none}
+#empty{display:grid;place-items:center;padding:24px;text-align:center;color:var(--dim)}
+#dbg{position:absolute;left:8px;top:8px;max-width:calc(100% - 16px);padding:6px 10px;border-radius:8px;background:rgba(0,0,0,.72);color:#9ff0ff;font-size:12px;line-height:1.4;font-variant-numeric:tabular-nums;white-space:pre;pointer-events:none}
+#tr{display:flex;align-items:center;gap:10px;padding:6px 12px;background:var(--card)}
+#tr .btn{flex:none;width:56px;min-height:48px;padding:0;font-size:20px;background:var(--line)}
+#seek{flex:1;min-width:0;height:44px;accent-color:var(--acc)}
+#tm{font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap}
+#panel{padding:10px 12px;max-height:40%;overflow:auto}
+#panel section{display:flex;flex-direction:column;gap:10px}
+.row{display:flex;gap:10px}.row>*{flex:1}
+.btn{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:56px;padding:10px 14px;border:0;border-radius:14px;background:var(--card);color:var(--txt);font-family:inherit;font-size:17px;font-weight:600;line-height:1.2;text-align:center;touch-action:manipulation;cursor:pointer}
+.btn.pri{background:var(--acc);color:#1a1500}
+.btn:disabled{opacity:.35}
+.btn:active:not(:disabled){filter:brightness(1.2)}
+.btn small{font-size:12px;font-weight:400;opacity:.75}
+.hint{margin:0;font-size:14px;color:var(--dim)}
+#info{min-height:20px;font-size:14px;color:var(--dim)}#info.bad{color:var(--bad)}
+#nav{display:flex;gap:10px;padding:10px 12px calc(10px + env(safe-area-inset-bottom));border-top:1px solid var(--line)}
+#nav .btn{flex:1}
+#toast{position:fixed;left:12px;right:12px;bottom:calc(92px + env(safe-area-inset-bottom));padding:12px 14px;border-radius:12px;background:#3a1a1f;border:1px solid #6b2d35;color:#ffc9c9;text-align:center;opacity:0;pointer-events:none;transition:opacity .2s}
+#toast.on{opacity:1}
+@media(max-height:480px){.st{font-size:0}.st i{margin:0 auto}#panel{max-height:34%}}
+</style>
+</head>
+<body>
+<div id="app">
+  <header id="steps"></header>
+  <div id="stage">
+    <video id="v" playsinline muted autoplay></video>
+    <canvas id="cv"></canvas>
+    <div id="empty">Выбери источник видео:<br>камера или видеофайл</div>
+    <div id="dbg" hidden></div>
+  </div>
+  <div id="tr" hidden>
+    <button class="btn" id="pp">▶</button>
+    <input id="seek" type="range" min="0" max="1" step="0.01" value="0">
+    <span id="tm">0:00.0</span>
+  </div>
+  <main id="panel">
+    <section data-s="1">
+      <div class="row">
+        <button class="btn pri" id="bCam">📷 Камера<small>задняя, FHD 60 FPS</small></button>
+        <label class="btn">🎞 Видеофайл<small>из галереи</small><input id="file" type="file" accept="video/*" hidden></label>
+      </div>
+      <div id="info"></div>
+    </section>
+    <section data-s="2">
+      <p class="hint">Держи телефон ровно, смотри вдоль дороги, упри локти.</p>
+      <button class="btn pri" id="bFz">❄ Заморозить кадр</button>
+      <p class="hint" id="hFz">Кадр заморожен. Один палец двигает, два пальца масштабируют (на компьютере — колесо мыши). Тап по кадру показывает координаты.</p>
+      <div class="row" id="rowFz">
+        <button class="btn" id="bUn">Переснять</button>
+        <button class="btn" id="bZ">Сбросить зум</button>
+      </div>
+    </section>
+  </main>
+  <footer id="nav">
+    <button class="btn" id="bk">Назад</button>
+    <button class="btn pri" id="nx">Далее</button>
+  </footer>
+  <div id="toast"></div>
+</div>
+<script>
+'use strict';
+/* ===== CFG: все пороги и константы ===== */
+const CFG={
+  cam:{w:1920,h:1080,fps:60},   // запрос камеры (ideal)
+  zoomMin:1,zoomMax:16,         // масштаб сцены относительно «кадр вписан»
+  wheelK:0.002,                 // чувствительность колеса мыши
+  tapMove:10,tapMs:500,         // тап: макс. сдвиг (CSS-px) и длительность (мс)
+  toastMs:2600
+};
+
+/* ===== S: состояние (поля описаны в комментарии ПРАВИЛА ПРОЕКТА) ===== */
+const S={mode:'wizard',step:1,src:{kind:null,video:null},fw:0,fh:0,cal:null,view:{scale:1,tx:0,ty:0},
+  gates:[],calib:null,lanes:{borders:[],names:[],types:[]},limit:50,
+  shift:{dx:0,dy:0,ok:true,state:'ok'},blobs:[],tracks:[],passes:[]};
+
+const $=id=>document.getElementById(id);
+const V=$('v'),cv=$('cv'),stage=$('stage'),info=$('info'),seek=$('seek');
+S.src.video=V;
+const STEPS=['Источник','Кадр','Ворота','Полосы','Лимит','Проверка'];
+const STUB={3:'частях 2–3',4:'части 4',5:'части 5',6:'части 6'};   // заглушки шагов 3–6
+const layers=[],P=new Map();
+let objUrl=null,dbgPt=null,dirty=false,last={w:0,h:0},tt=0,drag=false,tap=null,prev=null;
+
+/* ===== Сообщения ===== */
+function toast(m){const t=$('toast');t.textContent=m;t.classList.add('on');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('on'),CFG.toastMs);}
+function setInfo(m,bad){info.textContent=m;info.className=bad?'bad':'';}
+
+/* ===== Координаты: кадр (0..1) ↔ экран (клиентские CSS-px) ===== */
+const fit=r=>Math.min(r.width/S.fw,r.height/S.fh);   // CSS-px на пиксель кадра при scale=1
+function toFrame(cx,cy){
+  if(!S.cal)return{x:NaN,y:NaN};
+  const r=cv.getBoundingClientRect(),v=S.view,k=fit(r)*v.scale;
+  return{x:(cx-r.left-v.tx)/(S.fw*k),y:(cy-r.top-v.ty)/(S.fh*k)};
+}
+function toScreen(x,y){
+  if(!S.cal)return{px:NaN,py:NaN};
+  const r=cv.getBoundingClientRect(),v=S.view,k=fit(r)*v.scale;
+  return{px:r.left+v.tx+x*S.fw*k,py:r.top+v.ty+y*S.fh*k};
+}
+function sOfV(v){return NaN;}     // заглушка — часть 3
+function vOfS(s){return NaN;}     // заглушка — часть 3
+function laneAt(x,v){return -1;}  // заглушка — часть 4
+
+/* ===== Вид: сдвиг/масштаб ===== */
+function clampView(r){   // кадр не уходит с экрана; если меньше сцены — по центру
+  const v=S.view,k=fit(r)*v.scale,w=S.fw*k,h=S.fh*k;
+  v.tx=w<=r.width?(r.width-w)/2:Math.min(0,Math.max(r.width-w,v.tx));
+  v.ty=h<=r.height?(r.height-h)/2:Math.min(0,Math.max(r.height-h,v.ty));
+}
+function zoomAt(ax,ay,ns,r){   // масштаб с неподвижной точкой (ax,ay) в координатах сцены
+  const v=S.view,f=fit(r),k0=f*v.scale;
+  ns=Math.min(CFG.zoomMax,Math.max(CFG.zoomMin,ns));
+  const fx=(ax-v.tx)/k0,fy=(ay-v.ty)/k0;
+  v.scale=ns;v.tx=ax-fx*f*ns;v.ty=ay-fy*f*ns;
+}
+function onResize(){   // смена размера/ориентации: центр вида остаётся на том же месте кадра
+  const r=cv.getBoundingClientRect(),v=S.view;
+  if(S.cal&&last.w){
+    const k0=Math.min(last.w/S.fw,last.h/S.fh)*v.scale,k1=fit(r)*v.scale;
+    const fx=(last.w/2-v.tx)/k0,fy=(last.h/2-v.ty)/k0;
+    v.tx=r.width/2-fx*k1;v.ty=r.height/2-fy*k1;clampView(r);
+  }
+  last={w:r.width,h:r.height};redraw();
+}
+
+/* ===== Отрисовка ===== */
+function redraw(){if(!dirty){dirty=true;requestAnimationFrame(draw);}}
+function draw(){
+  dirty=false;
+  const r=cv.getBoundingClientRect(),d=window.devicePixelRatio||1;
+  const W=Math.max(1,Math.round(r.width*d)),H=Math.max(1,Math.round(r.height*d));
+  if(cv.width!==W||cv.height!==H){cv.width=W;cv.height=H;}
+  const g=cv.getContext('2d');g.setTransform(1,0,0,1,0,0);g.clearRect(0,0,W,H);
+  if(!S.cal||S.step<2)return;
+  const sx=W/r.width,sy=H/r.height,v=S.view,k=fit(r)*v.scale;
+  g.fillStyle='#000';g.fillRect(0,0,W,H);
+  g.setTransform(sx*k,0,0,sy*k,sx*v.tx,sy*v.ty);
+  g.imageSmoothingEnabled=k*sx<1;g.imageSmoothingQuality='high';
+  g.drawImage(S.cal,0,0);
+  layers.forEach(f=>f(g,k));
+}
+
+/* ===== Жесты на кадре: 1 палец — сдвиг, 2 пальца — масштаб, колесо — масштаб ===== */
+const cen=()=>{const a=[...P.values()];if(!a.length)return null;
+  return{x:a.reduce((s,p)=>s+p.x,0)/a.length,y:a.reduce((s,p)=>s+p.y,0)/a.length,
+    d:a.length>1?Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y):0};};
+cv.onpointerdown=e=>{
+  if(!S.cal||S.step<2)return;
+  cv.setPointerCapture(e.pointerId);P.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  tap=P.size===1?{x:e.clientX,y:e.clientY,t:e.timeStamp}:null;prev=cen();
+};
+cv.onpointermove=e=>{
+  if(!P.has(e.pointerId))return;
+  P.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(tap&&Math.hypot(e.clientX-tap.x,e.clientY-tap.y)>CFG.tapMove)tap=null;
+  const c=cen(),r=cv.getBoundingClientRect(),v=S.view;
+  if(prev.d&&c.d)zoomAt(prev.x-r.left,prev.y-r.top,v.scale*c.d/prev.d,r);   // щипок
+  v.tx+=c.x-prev.x;v.ty+=c.y-prev.y;prev=c;clampView(r);redraw();
+};
+cv.onpointerup=cv.onpointercancel=e=>{
+  if(!P.has(e.pointerId))return;
+  if(e.type==='pointerup'&&tap&&e.timeStamp-tap.t<CFG.tapMs)onTap(e.clientX,e.clientY);
+  tap=null;P.delete(e.pointerId);prev=cen();
+};
+cv.addEventListener('wheel',e=>{
+  if(!S.cal||S.step<2)return;
+  e.preventDefault();const r=cv.getBoundingClientRect();
+  zoomAt(e.clientX-r.left,e.clientY-r.top,S.view.scale*Math.exp(-e.deltaY*(e.deltaMode===1?16:1)*CFG.wheelK),r);
+  clampView(r);redraw();
+},{passive:false});
+['gesturestart','gesturechange','gestureend','contextmenu'].forEach(t=>cv.addEventListener(t,e=>e.preventDefault()));   // Safari: без зума страницы
+
+/* ===== Кадр: заморозка ===== */
+function dropFrame(){   // новый/потерянный кадр — всё, что к нему привязано, недействительно
+  S.cal=null;S.fw=S.fh=0;S.view={scale:1,tx:0,ty:0};
+  S.gates=[];S.calib=null;S.lanes={borders:[],names:[],types:[]};
+  S.shift={dx:0,dy:0,ok:true,state:'ok'};dbgPt=null;
+}
+function freeze(){
+  if(!S.src.kind||V.readyState<2||!V.videoWidth)return toast('Кадр ещё не готов — подожди секунду.');
+  dropFrame();
+  const c=document.createElement('canvas');c.width=S.fw=V.videoWidth;c.height=S.fh=V.videoHeight;
+  c.getContext('2d').drawImage(V,0,0);S.cal=c;V.pause();
+  clampView(cv.getBoundingClientRect());render();
+}
+function unfreeze(){dropFrame();if(S.src.kind==='camera')V.play().catch(()=>{});render();}
+
+/* ===== Источник: камера / видеофайл ===== */
+function stopSrc(){
+  const st=V.srcObject;if(st)st.getTracks().forEach(t=>t.stop());
+  V.pause();V.srcObject=null;V.removeAttribute('src');V.load();
+  if(objUrl){URL.revokeObjectURL(objUrl);objUrl=null;}
+  S.src.kind=null;dropFrame();
+}
+async function useCam(){
+  stopSrc();setInfo('Запуск камеры…');render();
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    setInfo('Камера недоступна: нужен HTTPS и современный браузер.',1);return;}
+  const c=CFG.cam;
+  try{
+    const st=await navigator.mediaDevices.getUserMedia({audio:false,video:{
+      facingMode:{ideal:'environment'},width:{ideal:c.w},height:{ideal:c.h},frameRate:{ideal:c.fps}}});
+    V.srcObject=st;await V.play();S.src.kind='camera';
+    const t=st.getVideoTracks()[0].getSettings();
+    setInfo('Камера: '+(t.width||V.videoWidth)+'×'+(t.height||V.videoHeight)+', '+Math.round(t.frameRate||0)+' fps');
+  }catch(e){
+    setInfo(e.name==='NotAllowedError'?'Доступ к камере запрещён — разреши его в настройках браузера.'
+      :e.name==='NotFoundError'?'Камера не найдена.':'Не удалось запустить камеру: '+(e.message||e.name),1);
+  }
+  render();
+}
+$('file').onchange=e=>{
+  const f=e.target.files[0];e.target.value='';if(!f)return;
+  stopSrc();objUrl=URL.createObjectURL(f);V.loop=false;V.src=objUrl+'#t=0.001';
+  S.src.kind='file';setInfo('Файл: '+f.name);render();
+};
+V.onloadedmetadata=()=>{
+  if(S.src.kind!=='file')return;
+  seek.max=V.duration||1;seek.value=0;info.textContent+=', '+V.videoWidth+'×'+V.videoHeight;tick();render();
+};
+V.onerror=()=>{
+  if(S.src.kind!=='file')return;
+  stopSrc();setInfo('Не удалось открыть видео: формат не поддерживается.',1);render();
+};
+const fmt=t=>Math.floor(t/60)+':'+(t%60).toFixed(1).padStart(4,'0');
+function tick(){if(!drag)seek.value=V.currentTime;$('tm').textContent=fmt(V.currentTime)+' / '+fmt(V.duration||0);}
+V.ontimeupdate=V.onseeked=tick;
+V.onplay=V.onpause=()=>{$('pp').textContent=V.paused?'▶':'⏸';};
+$('pp').onclick=()=>{if(V.paused)V.play().catch(()=>{});else V.pause();};
+seek.oninput=()=>{V.currentTime=+seek.value;};
+seek.onpointerdown=()=>{drag=true;};
+['pointerup','pointercancel'].forEach(t=>addEventListener(t,()=>{drag=false;}));
+
+/* ===== Мастер: 6 шагов ===== */
+function go(n){S.step=n;render();}
+function blocker(){   // почему нельзя перейти дальше ('' — можно)
+  if(S.step===1&&(!S.src.kind||!V.videoWidth))return 'Сначала выбери источник видео.';
+  if(S.step===2&&!S.cal)return 'Сначала заморозь кадр.';
+  return '';
+}
+function render(){
+  const fz=!!S.cal&&S.step>=2,kind=S.src.kind;
+  document.querySelectorAll('.st').forEach((el,i)=>{el.className='st'+(i+1<S.step?' done':i+1===S.step?' on':'');});
+  document.querySelectorAll('#panel section').forEach(s=>{s.hidden=+s.dataset.s!==S.step;});
+  $('bk').disabled=S.step===1;$('nx').disabled=S.step===6;
+  $('empty').hidden=!!kind||fz;
+  $('tr').hidden=!(kind==='file'&&!fz&&S.step<=2);
+  $('bFz').hidden=!!S.cal;$('rowFz').hidden=!S.cal;$('hFz').hidden=!S.cal;
+  $('dbg').hidden=!(fz&&dbgPt);
+  if(!fz)P.clear();
+  redraw();
+}
+$('bCam').onclick=useCam;
+$('bFz').onclick=freeze;
+$('bUn').onclick=unfreeze;
+$('bZ').onclick=()=>{S.view.scale=1;clampView(cv.getBoundingClientRect());redraw();};
+$('bk').onclick=()=>{if(S.step>1)go(S.step-1);};
+$('nx').onclick=()=>{const e=blocker();if(e)return toast(e);if(S.step<6)go(S.step+1);};
+
+/* ===== ОТЛАДКА (ВРЕМЕННО): тап по кадру → нормированные координаты ===== */
+function onTap(cx,cy){
+  const p=toFrame(cx,cy),b=toScreen(p.x,p.y);dbgPt=p;
+  $('dbg').textContent='x = '+p.x.toFixed(4)+',  y = '+p.y.toFixed(4)+(p.x<0||p.x>1||p.y<0||p.y>1?'  (вне кадра)':'')
+    +'\nпиксель кадра: '+Math.round(p.x*S.fw)+', '+Math.round(p.y*S.fh)
+    +'\nпогрешность туда-обратно: '+Math.hypot(b.px-cx,b.py-cy).toFixed(3)+' px';
+  $('dbg').hidden=false;redraw();
+}
+layers.push((g,k)=>{   // перекрестие в точке последнего тапа
+  if(!dbgPt)return;
+  const u=1/k,x=dbgPt.x*S.fw,y=dbgPt.y*S.fh;
+  g.strokeStyle='#ff3b6b';g.lineWidth=2*u;g.beginPath();
+  g.moveTo(x-18*u,y);g.lineTo(x+18*u,y);g.moveTo(x,y-18*u);g.lineTo(x,y+18*u);g.stroke();
+});
+
+/* ===== Старт ===== */
+$('steps').innerHTML=STEPS.map((t,i)=>'<div class="st"><i>'+(i+1)+'</i>'+t+'</div>').join('');
+for(const n in STUB){
+  const s=document.createElement('section');s.dataset.s=n;
+  s.innerHTML='<p class="hint"><b>Шаг '+n+'. '+STEPS[n-1]+'</b><br>Будет в '+STUB[n]+'.</p>';
+  $('panel').appendChild(s);
+}
+new ResizeObserver(onResize).observe(stage);
+render();
+</script>
+</body>
+</html>
