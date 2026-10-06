@@ -334,7 +334,7 @@ const CONFIG = {
     dupOverlap: 0.5,           // новый блоб над существующим треком с таким перекрытием по x — осколок, не машина
     // --- «не уверен — не меряй» ---
     minShowPts: 4, minShowWinSec: 0.6, minShowPath: 15, maxStepKmh: 3,   // число показывается, если точек не меньше и окно не короче (с)
-    earlyWinSec: 0.35, earlyStable: 2, earlyPath: 8,   // live-число с «~» (раньше): окно, с; оценок подряд; путь, м. Итоговый проезд остаётся строгим
+    earlyWinSec: 0.35, earlyStable: 2, earlyPath: 8, earlyErr: 0.07,   // live-число с «~» (раньше): окно, с; оценок подряд; путь, м. Итоговый проезд остаётся строгим
     showStable: 3, stableKmh: 12,        // …и последние N оценок подряд отличаются не больше чем на это, км/ч
     jumpKmh: 20, maxJumps: 3,            // после показа скачок больше этого — выброс (игнор); N скачков подряд — замер заново
     liveWinSec: 0.5, gateAgree: 0.08, highKmh: 130,  // окно быстрого LIVE, с; согласие A и B (доля), выше highKmh нужно подтверждение воротами
@@ -1491,7 +1491,7 @@ class Tracker {
         if (tr.dead || tr.lane !== b.lane || !tr.blob) continue;
         const a = tr.blob, ov = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0) + 1;
         const gapY = Math.max(0, Math.max(a.y0, b.y0) - Math.min(a.y1, b.y1));
-        if (ov >= tc.dupOverlap * Math.min(a.x1 - a.x0 + 1, b.x1 - b.x0 + 1) && gapY <= Math.max(a.y1 - a.y0 + 1, b.y1 - b.y0 + 1) && (b.yEdge < a.yEdge || b.area < 0.6 * a.area)) { frag = true; break; }
+        if (ov >= tc.dupOverlap * Math.min(a.x1 - a.x0 + 1, b.x1 - b.x0 + 1) && ((gapY <= Math.max(a.y1 - a.y0 + 1, b.y1 - b.y0 + 1) && b.area < 0.6 * a.area) || (gapY <= 0.3 * Math.max(a.y1 - a.y0 + 1, b.y1 - b.y0 + 1) && b.yEdge < a.yEdge))) { frag = true; break; }   // крупный блоб с просветом выше — следующая машина колонны, а не осколок
       }
       if (frag) continue;
       if (this._revive(b, t, T)) continue;
@@ -1545,7 +1545,7 @@ class Tracker {
       if (a.dead || b.dead || !a.blob || !b.blob || Math.abs(a.lane - b.lane) > 1) continue;
       const A = a.blob, B = b.blob, ov = Math.min(A.x1, B.x1) - Math.max(A.x0, B.x0) + 1;
       const gapY = Math.max(0, Math.max(A.y0, B.y0) - Math.min(A.y1, B.y1));
-      const close = Math.abs(a.x - b.x) <= 0.6 * Math.max(a.bw, b.bw) && Math.abs(a.y - b.y) <= tc.dupGapPx;
+      const close = Math.abs(a.x - b.x) <= 0.6 * Math.max(a.bw, b.bw) && Math.abs(a.y - b.y) <= Math.min(tc.dupGapPx, Math.max(3, 0.7 * Math.min(A.y1 - A.y0 + 1, B.y1 - B.y0 + 1)));   // у горизонта машины близки в пикселях — допуск по высоте блоба
       const touch = ov >= tc.dupOverlap * Math.min(A.x1 - A.x0 + 1, B.x1 - B.x0 + 1) && gapY <= 3;
       if (!close && !touch) continue;
       const lo = q(a) >= q(b) ? b : a; lo.dead = true; lo.dup = true; lo.why = 'dup';
@@ -1631,8 +1631,8 @@ class Tracker {
     tr.stable++; tr.jumps = 0;
     const nMin = tr.blob && tr.blob.det && vdGate() ? Math.min(3, tc.minShowPts) : tc.minShowPts;   // Т1.3: рамка детектора подтверждает машину — хватает 3 точек
     const mv = tr.moved && n >= nMin, strictOk = mv && tr.stable >= tc.showStable && tr.win >= tc.minShowWinSec && tr.path >= Math.max(tc.minTravelM, tc.minShowPath);
-    const bl = tr.blob, shapeOk = !bl || !vdGate() || bl.det || (bl.area >= 0.35 * bl.bw * (bl.y1 - bl.y0 + 1) && bl.bw >= 0.5 * bl.laneW);   // как pendOk: рамка детектора либо размер и форма
-    const earlyOk = !strictOk && mv && shapeOk && tr.stable >= tc.earlyStable && tr.win >= tc.earlyWinSec && tr.path >= Math.max(tc.minTravelM, tc.earlyPath);   // live-число раньше, с «~»
+    const bl = tr.blob, shapeOk = !bl || !vdGate() || bl.det || (bl.area >= 0.4 * bl.bw * (bl.y1 - bl.y0 + 1) && bl.bw >= 0.5 * bl.laneW && Math.max(bl.bw / (bl.y1 - bl.y0 + 1), (bl.y1 - bl.y0 + 1) / bl.bw) <= 3);   // как pendOk: рамка детектора либо размер и форма
+    const earlyOk = !strictOk && mv && shapeOk && tr.stable >= tc.earlyStable && tr.win >= tc.earlyWinSec && tr.path >= Math.max(tc.minTravelM, tc.earlyPath) && f.rel <= tc.earlyErr;   // live-число раньше, с «~»
     if (strictOk) tr.strict = true;
     tr.blk = !mv ? 'pts_move' : !shapeOk ? 'shape' : tr.stable < tc.earlyStable ? 'stable' : tr.win < tc.earlyWinSec ? 'win' : tr.path < Math.max(tc.minTravelM, tc.earlyPath) ? 'path' : '';   // что мешало показу — в журнал
     const okShow = strictOk || earlyOk;
@@ -1649,7 +1649,7 @@ class Tracker {
     }
     const gb = this._gates(tr), kA = Math.abs(f.slope) * 3.6, kB = gb ? gb.v * 3.6 : null;   // A — регрессия s(t), B — время между воротами
     let kmh = Math.abs(tr.flt.v) * 3.6;
-    if (tr.shown && tr.kmh != null) kmh = clamp(kmh, tr.kmh - tc.maxStepKmh, tr.kmh + tc.maxStepKmh);
+    if (tr.shown && tr.kmh != null) kmh = clamp(kmh, tr.kmh - tc.maxStepKmh, tr.kmh + (tr.strict ? tc.maxStepKmh : 1));   // «~» растёт не быстрее 1 км/ч за шаг
     kmh = Math.round(kmh);
     const dAB = kB == null ? null : Math.abs(kA - kB) / Math.max(kA, kB, 1);   // не усредняем: расхождение только снижает доверие
     let conf = dAB == null ? 'mid' : dAB <= tc.gateAgree ? 'high' : dAB <= 2.5 * tc.gateAgree ? 'mid' : 'low';
@@ -1657,7 +1657,7 @@ class Tracker {
     if (kmh > tc.highKmh && conf !== 'high') conf = 'low';   // высокую скорость не режем, а проверяем вторым способом → «~140»
     tr.rawK = Math.abs(raw) * 3.6; tr.fltK = Math.abs(tr.flt.v) * 3.6; tr.stabK = kA; tr.kmhB = kB; tr.conf = conf;   // LIVE / фильтр / STABLE / B (для отладки)
     tr.kmh = kmh; tr.dir = f.slope < 0 ? -1 : 1; tr.liveT = t; tr.tilde = f.rel > tc.maxRelErr || conf === 'low' || !tr.strict;
-    if (kmh >= tc.minSpeedKmh && (tr.shown || okShow)) {
+    if (kmh >= tc.minSpeedKmh && (tr.shown || strictOk || (earlyOk && conf !== 'low'))) {
       if (!tr.tilde) { tr.minK = Math.min(tr.minK, kmh); tr.maxK = Math.max(tr.maxK, kmh); }
       if (!tr.shown) { tr.shown = true; tr.justShown = true; if (this.onEv) this.onEv('show', tr, t); }
     }
@@ -1682,7 +1682,7 @@ class Tracker {
     const out = [];
     for (const tr of list) {
       const ps = this._finish(tr, t);
-      if (this.onEv) this.onEv('end', tr, t, ps ? 'pass' : (tr.dup ? 'dup' : (!tr.shown ? 'never_shown:' + (tr.blk || 'no_live') : (tr.pts.length < this.tc.finalMinPts ? 'few_pts:' + tr.pts.length : (tr.strict ? 'rejected' : 'live_only')))) + (tr.why ? '/' + tr.why : ''), ps);
+      if (this.onEv) this.onEv('end', tr, t, ps ? (ps.late ? 'pass_late' : 'pass') : (tr.dup ? 'dup' : (!tr.shown ? 'never_shown:' + (tr.blk || 'no_live') : (tr.pts.length < this.tc.finalMinPts ? 'few_pts:' + tr.pts.length : (tr.strict ? 'rejected' : 'live_only')))) + (tr.why ? '/' + tr.why : ''), ps);
       if (ps) { out.push(ps); this.passes.push(ps); if (this.passes.length > 50) this.passes.shift(); }
     }
     return out;
@@ -1690,18 +1690,19 @@ class Tracker {
 
   _finish(tr, t) {
     const tc = this.tc, P = tr.pts, n = P.length;
-    if (tr.dup || !tr.shown || n < tc.finalMinPts) return null;
+    if (tr.dup || n < tc.finalMinPts || (!tr.shown && !(tr.drawn || tr.frames >= tc.confirmFrames))) return null;
     const fit = wlsLine(P, 0, n - 1);
     if (!fit) return null;
     const kmh = Math.abs(fit.slope) * 3.6;
     if (kmh < tc.minSpeedKmh || !(fit.rel <= tc.showErr) || fit.rms > tc.finalMaxRmsM) return null;
     if ((isFinite(tr.minK) && tr.maxK - tr.minK > tc.maxSpreadKmh) || Math.abs(P[n - 1].s - P[0].s) < tc.minTravelM) return null;
     const mn = isFinite(tr.minK) ? Math.min(tr.minK, kmh) : kmh, mx = tr.maxK > 0 ? Math.max(tr.maxK, kmh) : kmh;
-    const ps = { id: tr.id, lane: tr.lane, dir: fit.slope < 0 ? -1 : 1, kmh, kmhMin: mn, kmhMax: mx, n, rms: fit.rms, rel: fit.rel, path: Math.abs(P[n - 1].s - P[0].s), live: tr.kmh, t0: P[0].t, t1: P[n - 1].t, wall: Date.now(), blob: tr.blob, blobT: tr.blobT, snap: tr.snap || null };
+    const ps = { id: tr.id, lane: tr.lane, dir: fit.slope < 0 ? -1 : 1, kmh, kmhMin: mn, kmhMax: mx, n, rms: fit.rms, rel: fit.rel, path: Math.abs(P[n - 1].s - P[0].s), live: tr.kmh == null ? kmh : tr.kmh, t0: P[0].t, t1: P[n - 1].t, wall: Date.now(), blob: tr.blob, blobT: tr.blobT, snap: tr.snap || null };
     const gb = this._gates(tr), kB = gb ? gb.v * 3.6 : null, dAB = kB == null ? null : Math.abs(kmh - kB) / Math.max(kmh, kB, 1);
     ps.kmhA = kmh; ps.kmhB = kB; ps.gatesN = gb ? gb.n : 0;   // FINAL: A и B раздельно (сравнение методов), без усреднения
     ps.conf = dAB == null ? 'mid' : dAB <= tc.gateAgree ? 'high' : dAB <= 2.5 * tc.gateAgree ? 'mid' : 'low';
-    if (!tr.strict && (kB == null || ps.conf === 'low')) return null;   // было только live-«~»: в список проездов — лишь при согласии ворот A/B
+    if (!tr.shown) { if (kB == null || ps.conf !== 'high' || !(fit.rel <= tc.maxRelErr)) return null; ps.late = true; }   // метка была, числа не успело: итог при согласии ворот A/B и чистой регрессии
+    else if (!tr.strict && (kB == null || ps.conf === 'low')) return null;   // было только live-«~»: в список проездов — лишь при согласии ворот A/B
     return ps;
   }
 }
@@ -2904,7 +2905,7 @@ function countMissed(t) {   // машина детектора в зоне за�
 function pendOk(b) {   // «…» только для настоящей машины: рамка детектора либо размер и форма (заполненность ≥ 0,35, ширина ≥ ½ полосы, не «нитка»)
   if (!vdGate() || b.det) return true;
   const w = b.x1 - b.x0 + 1, h = b.y1 - b.y0 + 1;
-  return b.area / (w * h) >= 0.35 && w >= 0.5 * laneWidthAt(R.geo, b.yEdge, b.lane) && Math.max(h / w, w / h) <= 4;
+  return b.area / (w * h) >= 0.4 && w >= 0.5 * laneWidthAt(R.geo, b.yEdge, b.lane) && Math.max(h / w, w / h) <= 3;
 }
 function exportLog() {
   if (!R.log || !R.log.length) { toast('Журнал пуст.'); return; }
