@@ -297,7 +297,7 @@ const CONFIG = {
     minAreaLane2: 0.04,        // мин. площадь, доля (ширина полосы)²
     minAreaMaxPx: 900,         // потолок этого порога, px: у близких машин (широкая полоса) квадрат не должен выбрасывать неполно найденные блобы
     minHeightLane: 0.12,       // мин. высота блоба, доля ширины полосы
-    minFill: 0.18,             // мин. заполненность рамки блоба (площадь / площадь рамки)
+    minFill: 0.25,             // мин. заполненность рамки блоба (площадь / площадь рамки)
     mergeGapPx: 6,             // слияние близких блобов одной полосы, px
     ownerFrac: 0.03,           // «хозяин» нижней кромки среди склеенных блобов соседних полос: площадь не меньше этой доли от крупнейшего
     ownerTol: 2,               // допуск по строке при выборе «хозяина» нижней кромки, px
@@ -319,15 +319,22 @@ const CONFIG = {
     gateMetricV: 0.25,         // + эта доля пути, пройденного с последнего замера
     edgeSigmaPx: 2,            // погрешность положения нижней кромки, px кадра анализа
     maxRelErr: 0.04,           // окно расширяется назад, пока ожидаемая погрешность скорости больше этой (доля); до неё метка без «~»
-    showErr: 0.08,             // число показывается при погрешности не больше этой (выше maxRelErr — с «~»), иначе «…»
+    showErr: 0.10,             // число показывается при погрешности не больше этой (выше maxRelErr — с «~»), иначе «…»
     minWinSec: 0.15, winMaxSec: 1.5, // ширина окна регрессии, с (минимум 3 точки)
-    maxAccel: 4,               // ограничение |dv/dt| фильтра скорости, м/с² (видео-время)
+    maxAccel: 3,               // ограничение |dv/dt| фильтра скорости, м/с² (видео-время)
     maxPxMeters: 0.5,          // предупреждение на шаге 6: 1 px кадра в зоне больше стольких метров
     minSpeedKmh: 8,            // медленнее — не машина
     pendingMaxSec: 1.5,        // сколько показывать «…» после появления нижней кромки (пока кромка у края кадра — без ограничения)
     confirmFrames: 3,          // кадров с блобом до показа метки
-    finalMinPts: 6, finalMaxRmsM: 1.0, // условия итогового проезда
+    finalMinPts: 6, finalMaxRmsM: 0.8, // условия итогового проезда
     dupOverlap: 0.5,           // новый блоб над существующим треком с таким перекрытием по x — осколок, не машина
+    // --- «не уверен — не меряй» ---
+    minShowPts: 4, minShowWinSec: 0.3,   // число показывается, если точек не меньше и окно не короче (с)
+    showStable: 2, stableKmh: 15,        // …и последние N оценок подряд отличаются не больше чем на это, км/ч
+    jumpKmh: 25, maxJumps: 3,            // после показа скачок больше этого — выброс (игнор); N скачков подряд — замер заново
+    maxLiveRmsM: 1.0, maxSpeedKmh: 220,  // невязка прямой s(t), м; потолок правдоподобной скорости
+    maxSpreadKmh: 35, minTravelM: 5,     // проезд не записывается, если скорость «гуляла» сильнее или путь короче
+    minMovePx: 8, dupGapPx: 10,         // трек считается машиной, только если сместился на столько px; ближе — дубль
     maxPasses: 500             // сколько проездов хранить в списке
   },
   // ---------- Уточнение нижней кромки по кадру исходного разрешения ----------
@@ -1346,17 +1353,33 @@ class Tracker {
         if (tr.dead || tr.lane !== b.lane || !tr.blob) continue;
         const a = tr.blob, ov = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0) + 1;
         const gapY = Math.max(0, Math.max(a.y0, b.y0) - Math.min(a.y1, b.y1));
-        if (ov >= tc.dupOverlap * Math.min(a.x1 - a.x0 + 1, b.x1 - b.x0 + 1) && gapY <= Math.max(a.y1 - a.y0 + 1, b.y1 - b.y0 + 1) && b.yEdge < a.yEdge) { frag = true; break; }
+        if (ov >= tc.dupOverlap * Math.min(a.x1 - a.x0 + 1, b.x1 - b.x0 + 1) && gapY <= Math.max(a.y1 - a.y0 + 1, b.y1 - b.y0 + 1) && (b.yEdge < a.yEdge || b.area < 0.6 * a.area)) { frag = true; break; }
       }
       if (frag) continue;
       const tr = new Track(this.nextId++, b, t);
       this._sample(tr, b, t);
       T.push(tr);
     }
+    this._dedupe(T);
     const alive = [];
     for (const tr of T) { if (tr.dead) finished.push(tr); else alive.push(tr); }
     this.tracks = alive;
     return this._finishAll(finished, t);
+  }
+
+  // два трека на одной машине (осколки блоба, тень, отражение): лучший остаётся, второй гасится и в проезды не попадает
+  _dedupe(T) {
+    const tc = this.tc, q = t => t.pts.length + (t.shown ? 4 : 0) - 3 * t.jumps - 20 * (t.err || 0);
+    for (let i = 0; i < T.length; i++) for (let j = i + 1; j < T.length; j++) {
+      const a = T[i], b = T[j];
+      if (a.dead || b.dead || !a.blob || !b.blob || Math.abs(a.lane - b.lane) > 1) continue;
+      const A = a.blob, B = b.blob, ov = Math.min(A.x1, B.x1) - Math.max(A.x0, B.x0) + 1;
+      const gapY = Math.max(0, Math.max(A.y0, B.y0) - Math.min(A.y1, B.y1));
+      const close = Math.abs(a.x - b.x) <= 0.6 * Math.max(a.bw, b.bw) && Math.abs(a.y - b.y) <= tc.dupGapPx;
+      const touch = ov >= tc.dupOverlap * Math.min(A.x1 - A.x0 + 1, B.x1 - B.x0 + 1) && gapY <= 3;
+      if (!close && !touch) continue;
+      const lo = q(a) >= q(b) ? b : a; lo.dead = true; lo.dup = true;
+    }
   }
 
   _v(x, y, li) {   // строка кадра (0..1) для калибровки полосы li с учётом наклона ворот
@@ -1398,6 +1421,7 @@ class Tracker {
     }
     if (b.lane !== tr.lane && calAt(this.cals, b.lane - 1) !== calAt(this.cals, tr.lane - 1)) { tr.pts = []; tr.fit = null; tr.flt = null; }   // смена полосы с другой калибровкой — измерение заново
     tr.x = b.xc; tr.y = b.yEdge; tr.u = b.u; tr.bw = b.bw; tr.lane = b.lane; tr.blob = b; tr.tLast = t; tr.miss = 0; tr.frames++; tr.occluded = false;
+    if (!tr.moved && Math.hypot(b.xc - tr.x0, b.yEdge - tr.y0) >= this.tc.minMovePx) tr.moved = true;
     this._sample(tr, b, t);
   }
 
@@ -1432,7 +1456,19 @@ class Tracker {
     const f = wlsLine(P, i0, n - 1);
     if (!f) return;
     tr.err = f.rel; tr.win = t - P[i0].t;
-    if (!(f.rel <= tc.showErr)) return;                      // ненадёжно: «…» или прежнее значение
+    if (!(f.rel <= tc.showErr) || f.rms > tc.maxLiveRmsM) { tr.stable = 0; return; }   // ненадёжно: «…» или прежнее значение
+    const fk = Math.abs(f.slope) * 3.6, prevK = tr.lastSlope == null ? null : Math.abs(tr.lastSlope) * 3.6;
+    if (fk > tc.maxSpeedKmh) { tr.stable = 0; return; }
+    // согласованность: оценки подряд должны совпадать; резкий скачок — выброс (пятно, осколок), его не принимаем
+    const jump = prevK != null && Math.abs(fk - prevK) > (tr.shown ? tc.jumpKmh : tc.stableKmh);
+    if (!tr.shown || !jump) tr.lastSlope = f.slope;
+    if (jump) {
+      tr.stable = 0;
+      if (tr.shown && ++tr.jumps >= tc.maxJumps) { tr.pts = []; tr.fit = null; tr.flt = null; tr.shown = false; tr.kmh = null; tr.minK = Infinity; tr.maxK = 0; tr.jumps = 0; tr.lastSlope = null; tr.moved = false; tr.x0 = tr.x; tr.y0 = tr.y; }
+      return;
+    }
+    tr.stable++; tr.jumps = 0;
+    const okShow = tr.stable >= tc.showStable && n >= tc.minShowPts && tr.win >= tc.minShowWinSec && tr.moved && Math.abs(P[n - 1].s - P[0].s) >= tc.minTravelM;
     tr.fit = { icpt: f.icpt, slope: f.slope, tm0: f.tm };
     // фильтр скорости: Калман с ограничением |dv/dt| ≤ maxAccel (видео-время)
     const fl = tr.flt;
@@ -1445,7 +1481,7 @@ class Tracker {
     }
     const v = tr.flt.v, kmh = Math.abs(v) * 3.6;
     tr.kmh = kmh; tr.dir = v < 0 ? -1 : 1; tr.liveT = t; tr.tilde = f.rel > tc.maxRelErr;
-    if (kmh >= tc.minSpeedKmh) {
+    if (kmh >= tc.minSpeedKmh && (tr.shown || okShow)) {
       if (!tr.tilde) { tr.minK = Math.min(tr.minK, kmh); tr.maxK = Math.max(tr.maxK, kmh); }
       if (!tr.shown) { tr.shown = true; tr.justShown = true; }
     }
@@ -1462,11 +1498,12 @@ class Tracker {
 
   _finish(tr, t) {
     const tc = this.tc, P = tr.pts, n = P.length;
-    if (n < tc.finalMinPts) return null;
+    if (tr.dup || !tr.shown || n < tc.finalMinPts) return null;
     const fit = wlsLine(P, 0, n - 1);
     if (!fit) return null;
     const kmh = Math.abs(fit.slope) * 3.6;
     if (kmh < tc.minSpeedKmh || !(fit.rel <= tc.showErr) || fit.rms > tc.finalMaxRmsM) return null;
+    if ((isFinite(tr.minK) && tr.maxK - tr.minK > tc.maxSpreadKmh) || Math.abs(P[n - 1].s - P[0].s) < tc.minTravelM) return null;
     const mn = isFinite(tr.minK) ? Math.min(tr.minK, kmh) : kmh, mx = tr.maxK > 0 ? Math.max(tr.maxK, kmh) : kmh;
     const ps = { id: tr.id, lane: tr.lane, dir: fit.slope < 0 ? -1 : 1, kmh, kmhMin: mn, kmhMax: mx, n, rms: fit.rms, rel: fit.rel, t0: P[0].t, t1: P[n - 1].t, wall: Date.now(), blob: tr.blob, blobT: tr.blobT, snap: tr.snap || null };
     return ps;
@@ -1479,6 +1516,7 @@ class Track {
     this.x = b.xc; this.y = b.yEdge; this.bw = b.bw; this.vx = 0; this.vy = 0; this.hasVel = false;
     this.blob = b; this.blobT = t; this.kmh = null; this.dir = 0; this.minK = Infinity; this.maxK = 0;
     this.shown = false; this.justShown = false; this.dead = false; this.snap = null; this.liveT = -1;
+    this.stable = 0; this.jumps = 0; this.lastSlope = null; this.x0 = b.xc; this.y0 = b.yEdge; this.moved = false; this.dup = false;
     this.hist = [{ t, x: b.xc, y: b.yEdge }]; this.fit = null; this.u = b.u; this.occluded = false; this.flt = null; this.err = null; this.win = 0; this.tilde = false;
   }
 }
@@ -2904,8 +2942,9 @@ function drawRun() {
       const bl = tr.blob; if (!bl) continue;
       const age = R.tNow - (tr.pts.length ? tr.pts[0].t : tr.t0);
       let show = false, pending = false;
+      if (tr.dup) continue;
       if (tr.shown && tr.kmh != null && tr.kmh >= minK) show = true;
-      else if (!tr.shown && tr.frames >= tc.confirmFrames && (bl.touching || age <= tc.pendingMaxSec) && bl.area >= CONFIG.blob.minAreaPx) pending = true;
+      else if (!tr.shown && tr.moved && tr.frames >= tc.confirmFrames && (bl.touching || age <= tc.pendingMaxSec) && bl.area >= CONFIG.blob.minAreaPx) pending = true;
       if (!show && !pending) continue;
       list.push({ cx: bl.xc, ce: bl.yEdge, y0: bl.y0, kmh: pending ? null : tr.kmh, dir: pending ? 0 : tr.dir, lane: tr.lane, id: tr.id, ord: bl.yEdge, tilde: !pending && tr.tilde, dbg: S.debug && tr.err != null ? 'σ ' + fmt(100 * tr.err, 1) + '% · ' + fmt(tr.win, 2) + ' с' : '' });
     }
