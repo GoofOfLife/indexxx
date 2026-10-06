@@ -210,6 +210,8 @@ body.running #toast{bottom:calc(env(safe-area-inset-bottom) + 74px)}
  *   + perLane (режим «свои ворота»), lane (выбранная полоса, с 0), L[] (наборы по полосам того же вида).
  * S.calibs[i] — калибровка полосы i (в общем режиме все элементы — один объект), S.calib — выбранной полосы.
  *   Калибровка: {a,b,c,rms,vNear,vFar,sMax,...}; зона полосы — от vNear (низ кадра) до vFar (последние ворота + 10 %).
+ * Наклон ворот: g.rot[i] — угол линии ворот i (рад., + = правая сторона ниже), поворот вокруг кольца aim; v — строка в точке кольца.
+ *   Калибровка идёт по строкам опорной колонки XR (gateVr); cal.til = tiltOf(g) — семейство наклонных линий; v трекера = tiltV(til, x, y).
  * Функции: GS(i), fixSet, cloneSet, recalc, calsOk, lanePre, lanePath, laneTabs, packSet/readSet, analysisH;
  *   CORE: calAt/sOfV/vOfS(cals, …, индекс полосы), wlsLine; Tracker._sample/_live (σ точки, окно, фильтр).
  * CFG.* из ТЗ = CONFIG.track.*: edgeSigmaPx, maxRelErr, showErr, minWinSec, winMaxSec, maxAccel, maxPxMeters.
@@ -446,6 +448,37 @@ const sOfV = (cals, v, li) => calAt(cals, li).sOf(v);
 const vOfS = (cals, s, li) => calAt(cals, li).vOf(s);
 
 /* ---------- Геометрия полос ---------- */
+const XR = 0.5;   // опорная колонка (доля ширины): калибровка ведётся по строкам кадра в этой колонке
+// Наклон ворот → { xr, vr[], ks[], span } по возрастанию vr; ks — dv/dx в долях кадра (tgθ·ширина/высота). null, если все ворота горизонтальны
+function tiltOf(g, asp) {
+  const rot = g.rot || [], P = []; let any = false;
+  for (let i = 0; i < g.n; i++) {
+    const th = +rot[i] || 0, ks = Math.tan(th) * asp;
+    if (Math.abs(th) > 1e-4) any = true;
+    P.push({ vr: g.v[i] + ks * (XR - g.aim[i]), ks });
+  }
+  if (!any) return null;
+  P.sort((p, q) => p.vr - q.vr);
+  return { xr: XR, vr: P.map(p => p.vr), ks: P.map(p => p.ks), span: 0.5 * Math.max(...P.map(p => Math.abs(p.ks))) };
+}
+function tiltK(til, vr) {   // наклон семейства линий на опорной строке vr: линейная интерполяция между воротами, за крайними — постоянный
+  const V = til.vr, K = til.ks, n = V.length;
+  if (vr <= V[0]) return K[0];
+  if (vr >= V[n - 1]) return K[n - 1];
+  let i = 1; while (V[i] < vr) i++;
+  return K[i - 1] + (K[i] - K[i - 1]) * (vr - V[i - 1]) / (V[i] - V[i - 1]);
+}
+const tiltY = (til, x, vr) => vr + tiltK(til, vr) * (x - til.xr);   // строка кадра, где линия семейства vr проходит через колонку x
+function tiltV(til, x, y) {   // обратно: точка (x, y) → строка vr опорной колонки на той же линии семейства (деление пополам: устойчиво, даже если наклон меняется быстро)
+  const dx = x - til.xr, m = 2 * til.span * Math.abs(dx) + 0.01;
+  let lo = y - m, hi = y + m;
+  for (let k = 0; k < 26; k++) {
+    const mid = 0.5 * (lo + hi);
+    if (mid + tiltK(til, mid) * dx < y) lo = mid; else hi = mid;
+  }
+  return 0.5 * (lo + hi);
+}
+
 function xAtY(b, y) {
   const dy = b.y2 - b.y1;
   return Math.abs(dy) < 1e-6 ? b.x1 : b.x1 + (y - b.y1) * (b.x2 - b.x1) / dy;
@@ -1274,7 +1307,7 @@ class Tracker {
         const inside = xp >= b.x0 - 4 && xp <= b.x1 + 4;      // предсказанная точка внутри блоба — форма блоба могла измениться
         if ((dx > gx && !inside) || dy > gy) continue;
         if (pr.metric) {
-          const vb = b.yEdge / this.ah, li = tr.lane - 1;
+          const li = tr.lane - 1, vb = this._v(b.xc, b.yEdge, li);
           if (vb >= calAt(this.cals, li).vFar) {
             const sb = sOfV(this.cals, vb, li), mpp = Math.abs(sOfV(this.cals, vb + 1 / this.ah, li) - sb);   // метров на пиксель в этой строке
             if (isFinite(sb) && Math.abs(sb - pr.s) > tc.gateMetricM + 3 * mpp + tc.gateMetricV * Math.abs(tr.fit.slope) * dtT + 0.6 * tr.miss) continue;
@@ -1326,6 +1359,11 @@ class Tracker {
     return this._finishAll(finished, t);
   }
 
+  _v(x, y, li) {   // строка кадра (0..1) для калибровки полосы li с учётом наклона ворот
+    const til = calAt(this.cals, li).til;
+    return til && this.geo ? tiltV(til, x / this.geo.aw, y / this.ah) : y / this.ah;
+  }
+
   // Предсказание положения кромки: по метрической модели s(t) (устойчиво к перспективе и перекрытиям) или по пиксельной скорости
   _predict(tr, t) {
     const dtT = Math.max(0, t - tr.tLast);
@@ -1334,7 +1372,7 @@ class Tracker {
     if (tr.fit) {
       const sp = tr.fit.icpt + tr.fit.slope * (t - tr.fit.tm0);
       const vp = vOfS(this.cals, sp, tr.lane - 1);
-      if (isFinite(vp) && vp > 0 && vp < 1.2) { y = vp * this.ah; metric = true; sPred = sp; }
+      if (isFinite(vp) && vp > 0 && vp < 1.2) { const til = calAt(this.cals, tr.lane - 1).til; y = (til && this.geo ? tiltY(til, (tr.x + tr.vx * dtT) / this.geo.aw, vp) : vp) * this.ah; metric = true; sPred = sp; }
     }
     let x = tr.x + tr.vx * dtT, xl = null;
     if (this.geo && tr.u != null) {
@@ -1366,7 +1404,7 @@ class Tracker {
   _sample(tr, b, t) {
     tr.blob = b; tr.blobT = t;
     if (!b.usable) return;                                   // кромка у края кадра или обрезана: трек живёт, точек нет
-    const li = tr.lane - 1, v = b.yEdge / this.ah;
+    const li = tr.lane - 1, v = this._v(b.xc, b.yEdge, li);
     if (v < calAt(this.cals, li).vFar) return;               // за зоной полосы скорость не обновляется (метка держит последнее значение)
     const s = sOfV(this.cals, v, li);
     if (!isFinite(s)) return;
@@ -1524,9 +1562,11 @@ function fixSet(g) {
   while (g.v.length < g.n) { const i = g.v.length; g.v.push(i ? Math.max(0.04, Math.min(defaultGateV(i), g.v[i - 1] - 0.03)) : defaultGateV(0)); }
   for (let i = 0; i < g.n; i++) if (!(g.v[i] > 0 && g.v[i] < 1)) g.v[i] = defaultGateV(i);
   while (g.aim.length < 6) g.aim.push(0.5);
+  if (!g.rot) g.rot = [];
+  for (let i = 0; i < 6; i++) if (!isFinite(g.rot[i])) g.rot[i] = 0;
   g.sel = clamp(g.sel, 0, g.n - 1);
 }
-const cloneSet = g => ({ n: g.n, v: g.v.slice(), aim: g.aim.slice(), mode: g.mode, markM: g.markM, steps: g.steps.slice(), meters: g.meters.slice(), sel: 0 });
+const cloneSet = g => ({ n: g.n, v: g.v.slice(), aim: g.aim.slice(), rot: (g.rot || []).slice(), mode: g.mode, markM: g.markM, steps: g.steps.slice(), meters: g.meters.slice(), sel: 0 });
 const GS = i => { const G = S.gates; return G.perLane ? (G.L[i == null ? G.lane : i] || G) : G; };   // набор ворот полосы i (по умолчанию выбранной); в общем режиме — единый
 function ensureDefaults() {
   const G = S.gates, L = S.lanes, nb = L.n + 1;
@@ -1544,7 +1584,7 @@ function defaultBound(k, n) {
   return { x1: xb, y1: 0.95, x2: vp + (xb - vp) * kk, y2: 0.55 };
 }
 function resetPositions() {
-  for (const g of [S.gates].concat(S.gates.L)) { g.v = Array.from({ length: g.n }, (_, i) => defaultGateV(i)); g.aim = [0.5, 0.5, 0.5, 0.5, 0.5, 0.5]; }
+  for (const g of [S.gates].concat(S.gates.L)) { g.v = Array.from({ length: g.n }, (_, i) => defaultGateV(i)); g.aim = [0.5, 0.5, 0.5, 0.5, 0.5, 0.5]; g.rot = [0, 0, 0, 0, 0, 0]; }
   S.lanes.b = []; ensureDefaults();
 }
 function gateDists(g) {
@@ -1554,7 +1594,7 @@ function gateDists(g) {
 }
 function recalc() {      // калибровки всех полос: S.calibs[i]; S.calib — выбранной полосы (в общем режиме — единая)
   ensureDefaults();
-  const G = S.gates, n = S.lanes.n, mk = g => makeCalib(g.v.slice(0, g.n), gateDists(g));
+  const G = S.gates, n = S.lanes.n, mk = g => { const asp = gateAsp(), c = makeCalib(gateVr(g, asp), gateDists(g)); c.til = tiltOf(g, asp); return c; };
   if (G.perLane) { S.calibs = []; for (let i = 0; i < n; i++) S.calibs.push(mk(GS(i))); S.calib = S.calibs[G.lane]; }
   else { S.calib = mk(G); S.calibs = new Array(n).fill(S.calib); }
   return S.calib;
@@ -1646,6 +1686,16 @@ function drawEmptyHint() {
   ctx.fillText('Выбери источник видео ниже', SW / 2, SH / 2);
 }
 
+/* ---------- Наклон ворот в интерфейсе ---------- */
+const gRot = (g, i) => (g.rot && g.rot[i]) || 0;
+function gateAsp() { return V.w > 0 && V.h > 0 ? V.w / V.h : 16 / 9; }
+function gateVr(g, asp) { return g.v.slice(0, g.n).map((v, i) => v + Math.tan(gRot(g, i)) * asp * (XR - g.aim[i])); }   // строки ворот на опорной колонке — вход калибровки
+function gateLine(g, i) {   // линия ворот i: at(px) — y сцены в колонке px; xp, yp — кольцо (точка поворота)
+  const ks = Math.tan(gRot(g, i)) * gateAsp(), a = g.aim[i], v = g.v[i];
+  return { at: px => fy(v + ks * (ix(px) - a)), xp: fx(a), yp: fy(v) };
+}
+function knobPos(g, i, L) { const th = gRot(g, i), side = g.aim[i] > 0.7 ? -1 : 1; return { x: L.xp + side * 70 * Math.cos(th), y: L.yp + side * 70 * Math.sin(th), side }; }
+
 function drawGates(faint) {
   const G = S.gates;
   if (G.perLane) for (let k = 0; k < S.lanes.n; k++) if (k !== G.lane) drawGateSet(GS(k), true, 0.22);   // остальные полосы приглушены
@@ -1656,22 +1706,28 @@ function drawGateSet(g, faint, alpha) {
   const order = []; for (let i = 0; i < g.n; i++) order.push(i);
   order.sort((p, q) => (q === g.sel) - (p === g.sel));            // подпись выбранных ворот — в приоритете
   for (const i of order) {
-    const y = fy(g.v[i]), sel = !faint && i === g.sel;
+    const L = gateLine(g, i), y = L.at(0), sel = !faint && i === g.sel;
     ctx.globalAlpha = alpha;
     ctx.strokeStyle = sel ? '#ffffff' : GATE_COL; ctx.lineWidth = sel ? 2 : 1.4; ctx.setLineDash([]);
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(SW, y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(SW, L.at(SW)); ctx.stroke();
     if (!faint) {
       if (shown.every(v => Math.abs(v - y) >= 22)) { shown.push(y); drawLabel((i + 1) + ' · ' + fmt(ss[i], ss[i] % 1 ? 1 : 0) + ' м', 6, y - 16, sel ? '#fff' : GATE_COL); }
-      // ручка у правого края
-      const hx = SW - 26;
-      ctx.fillStyle = sel ? '#ffffff' : GATE_COL; roundRect(hx - 22, y - 15, 44, 30, 9); ctx.fill();
-      ctx.fillStyle = '#0b0d10'; ctx.font = '700 15px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(String(i + 1), hx, y + 1);
-      ctx.strokeStyle = '#0b0d10'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(hx - 15, y - 6); ctx.lineTo(hx - 15, y + 6); ctx.moveTo(hx + 15, y - 6); ctx.lineTo(hx + 15, y + 6); ctx.stroke();
-      // кольцо наведения
-      const ax = fx(g.aim[i]);
+      // ручка у правого края (сидит на наклонной линии)
+      const hx = SW - 26, hy = L.at(hx);
+      ctx.fillStyle = sel ? '#ffffff' : GATE_COL; roundRect(hx - 22, hy - 15, 44, 30, 9); ctx.fill();
+      ctx.fillStyle = '#0b0d10'; ctx.font = '700 15px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(String(i + 1), hx, hy + 1);
+      ctx.strokeStyle = '#0b0d10'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(hx - 15, hy - 6); ctx.lineTo(hx - 15, hy + 6); ctx.moveTo(hx + 15, hy - 6); ctx.lineTo(hx + 15, hy + 6); ctx.stroke();
+      // кольцо наведения — оно же точка поворота
+      const ax = L.xp, ay = L.yp;
       ctx.strokeStyle = sel ? '#ffffff' : GATE_COL; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(ax, y, 11, 0, 7); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(ax - 5, y); ctx.lineTo(ax + 5, y); ctx.moveTo(ax, y - 5); ctx.lineTo(ax, y + 5); ctx.stroke();
+      ctx.beginPath(); ctx.arc(ax, ay, 11, 0, 7); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(ax - 5, ay); ctx.lineTo(ax + 5, ay); ctx.moveTo(ax, ay - 5); ctx.lineTo(ax, ay + 5); ctx.stroke();
+      if (sel) {   // ручка поворота выбранных ворот
+        const kn = knobPos(g, i, L);
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(kn.x, kn.y); ctx.stroke();
+        ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(kn.x, kn.y, 14, 0, 7); ctx.fill();
+        ctx.fillStyle = '#0b0d10'; ctx.font = '700 18px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('↻', kn.x, kn.y + 1);
+      }
     }
     ctx.globalAlpha = 1;
   }
@@ -1723,27 +1779,27 @@ function drawCheck() {
   for (let s = sLo; s <= cal.sMax + 1e-6; s += CONFIG.calib.rulerStepM) {      // снизу вверх: ближние подписи в приоритете
     const v = vOfS(S.calibs, s, G.lane);
     if (!isFinite(v) || v < 0.01 || v > 0.999) continue;
-    const y = fy(v), inside = s >= -1e-6 && s <= sLast + 1e-6;
+    const y = cal.til ? fy(tiltY(cal.til, ix(0), v)) : fy(v), y1 = cal.til ? fy(tiltY(cal.til, ix(SW), v)) : y, inside = s >= -1e-6 && s <= sLast + 1e-6;
     ctx.strokeStyle = inside ? GATE_COL : '#ff9f43'; ctx.lineWidth = inside ? 1.5 : 1.3;
     ctx.setLineDash(inside ? [] : [7, 5]);
     ctx.globalAlpha = 0.9;
     ctx.save(); if (clip) ctx.clip(clip);
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(SW, y); ctx.stroke(); ctx.restore();
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(SW, y1); ctx.stroke(); ctx.restore();
     ctx.setLineDash([]); ctx.globalAlpha = 1;
     if (shown.every(q => Math.abs(q - y) >= 24)) { shown.push(y); drawLabel((s > 0 ? '+' : '') + s + ' м', 6, y - 12, inside ? GATE_COL : '#ffbf80'); }
   }
   // сами ворота
   const gs = [];
   for (let i = 0; i < GS().n; i++) {
-    const y = fy(GS().v[i]);
+    const L = gateLine(GS(), i), y = L.at(SW - 70);
     ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.2; ctx.setLineDash([]);
-    ctx.beginPath(); ctx.moveTo(SW - 70, y); ctx.lineTo(SW, y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(SW - 70, y); ctx.lineTo(SW, L.at(SW)); ctx.stroke();
     if (gs.every(q => Math.abs(q - y) >= 24)) { gs.push(y); drawLabel('ворота ' + (i + 1), SW - 76, y, '#fff', 'right'); }
   }
 }
 
 /* =====================  Лупа  ===================== */
-function showLoupe(nx, ny, px, py, kind, aimNx) {
+function showLoupe(nx, ny, px, py, kind, aimNx, ang) {
   const box = $('loupe'), lc = $('lcv'), LS = CONFIG.ui.loupeSize, Z = CONFIG.ui.loupeZoom;
   if (!S.frozen) return;
   if (lc.width !== Math.round(LS * DPR)) { lc.width = Math.round(LS * DPR); lc.height = Math.round(LS * DPR); lc.style.width = LS + 'px'; lc.style.height = LS + 'px'; }
@@ -1759,7 +1815,7 @@ function showLoupe(nx, ny, px, py, kind, aimNx) {
   c.drawImage(F.cv, cx - side / 2, cy - side / 2, side, side, 0, 0, LS, LS);
   c.strokeStyle = kind === 'gate' ? GATE_COL : LANE_COL; c.lineWidth = 1;
   c.beginPath();
-  if (kind === 'gate') { c.moveTo(0, LS / 2); c.lineTo(LS, LS / 2); c.moveTo(LS / 2, LS / 2 - 8); c.lineTo(LS / 2, LS / 2 + 8); }
+  if (kind === 'gate') { const ca = Math.cos(ang || 0), sa = Math.sin(ang || 0), h = LS / 2; c.moveTo(h - ca * LS, h - sa * LS); c.lineTo(h + ca * LS, h + sa * LS); c.moveTo(h - sa * 8, h + ca * 8); c.lineTo(h + sa * 8, h - ca * 8); }
   else { c.moveTo(0, LS / 2); c.lineTo(LS / 2 - 6, LS / 2); c.moveTo(LS / 2 + 6, LS / 2); c.lineTo(LS, LS / 2); c.moveTo(LS / 2, 0); c.lineTo(LS / 2, LS / 2 - 6); c.moveTo(LS / 2, LS / 2 + 6); c.lineTo(LS / 2, LS); }
   c.stroke();
 }
@@ -1784,12 +1840,13 @@ function hitTest(p) {
   if (S.step === 2) {
     // выбираем ближайшую ручку (кольцо наведения или ручку у края); у выбранных ворот небольшое преимущество
     let best = null, bd = Infinity;
+    { const kn = knobPos(g, g.sel, gateLine(g, g.sel)); if (Math.hypot(kn.x - p.x, kn.y - p.y) < hr * 0.9) return { type: 'rot', idx: g.sel, side: kn.side }; }   // ручка поворота выбранных ворот
     for (let i = 0; i < g.n; i++) {
-      const y = fy(g.v[i]), bonus = i === g.sel ? 3 : 0;
-      let dx = fx(g.aim[i]) - p.x, dy = y - p.y, d = Math.hypot(dx, dy) - bonus;
+      const L = gateLine(g, i), y = L.yp, hy = L.at(SW - 26), bonus = i === g.sel ? 3 : 0;
+      let dx = L.xp - p.x, dy = y - p.y, d = Math.hypot(dx, dy) - bonus;
       if (d < hr * 0.95 && d < bd) { bd = d; best = { type: 'aim', idx: i, ox: dx, oy: dy }; }
-      const ex = Math.abs(p.x - (SW - 26)), ey = Math.abs(p.y - y);
-      if (ex < 34 && ey < 28) { d = Math.hypot(ex * 0.5, ey) - bonus; if (d < bd) { bd = d; best = { type: 'gate', idx: i, ox: 0, oy: y - p.y }; } }
+      const ex = Math.abs(p.x - (SW - 26)), ey = Math.abs(p.y - hy);
+      if (ex < 34 && ey < 28) { d = Math.hypot(ex * 0.5, ey) - bonus; if (d < bd) { bd = d; best = { type: 'gate', idx: i, ox: 0, oy: hy - p.y }; } }
     }
     return best;
   }
@@ -1801,10 +1858,16 @@ function applyDrag(p) {
   if (drag.type === 'gate' || drag.type === 'aim') {
     const i = drag.idx;
     let v = iy(p.y + drag.oy);
+    if (drag.type === 'gate') v -= Math.tan(gRot(g, i)) * gateAsp() * (ix(SW - 26) - g.aim[i]);   // ручка у края лежит на наклонной линии
     const lo = (i + 1 < g.n ? g.v[i + 1] : 0.005) + CONFIG.calib.minGap, hi = (i > 0 ? g.v[i - 1] : 0.995) - CONFIG.calib.minGap;
     g.v[i] = clamp(v, lo, Math.max(lo, hi));
     if (drag.type === 'aim') g.aim[i] = clamp(ix(p.x + drag.ox), 0.01, 0.99);
-    showLoupe(g.aim[i], g.v[i], SW - 26, p.y, 'gate');
+    showLoupe(g.aim[i], g.v[i], SW - 26, p.y, 'gate', 0, gRot(g, i));
+    onGeometryChanged();
+  } else if (drag.type === 'rot') {
+    const i = drag.idx, th = Math.atan2(drag.side * (p.y - fy(g.v[i])), Math.abs(p.x - fx(g.aim[i])) + 1e-6);   // ручка лежит на линии ворот
+    g.rot[i] = Math.abs(th) < 0.0087 ? 0 : clamp(th, -0.7, 0.7);   // у горизонтали «прилипает» к 0°
+    showLoupe(g.aim[i], g.v[i], p.x, p.y, 'gate', 0, g.rot[i]); updateNudge();
     onGeometryChanged();
   } else if (drag.type === 'lane') {
     const l = S.lanes.b[drag.idx], w = drag.pt;
@@ -1871,13 +1934,20 @@ cv.addEventListener('wheel', e => {
 }, { passive: false });
 $('btnFit').addEventListener('click', () => { fitView(false); redraw(); });
 
+function rotGate(d) {   // поворот выбранных ворот: d — шаг, градусы; null — в 0°; 'all' — угол выбранных всем воротам
+  const g = GS(), i = g.sel;
+  if (d === 'all') g.rot.fill(g.rot[i]); else g.rot[i] = d === null ? 0 : clamp(gRot(g, i) + d * Math.PI / 180, -0.7, 0.7);
+  if (S.frozen) showLoupe(g.aim[i], g.v[i], SW - 26, 0, 'gate', 0, g.rot[i]);
+  clearTimeout(nudgeGate.t); nudgeGate.t = setTimeout(hideLoupe, 900);
+  updateNudge(); onGeometryChanged();
+}
 function nudgeGate(dir) {
   const g = GS(), i = g.sel;
   const step = 1 / (S.frozen ? S.frozen.h : 1000);
   const lo = (i + 1 < g.n ? g.v[i + 1] : 0.005) + CONFIG.calib.minGap, hi = (i > 0 ? g.v[i - 1] : 0.995) - CONFIG.calib.minGap;
   g.v[i] = clamp(g.v[i] + dir * step, lo, Math.max(lo, hi));
   const nx = g.aim[i];
-  if (S.frozen) showLoupe(nx, g.v[i], SW - 26, 0, 'gate');
+  if (S.frozen) showLoupe(nx, g.v[i], SW - 26, 0, 'gate', 0, gRot(g, i));
   clearTimeout(nudgeGate.t); nudgeGate.t = setTimeout(hideLoupe, 900);
   onGeometryChanged();
 }
@@ -2094,10 +2164,17 @@ function buildGates(box) {
     el('div', { class: 'row tight' },
       el('button', { class: 'btn small sq', type: 'button', 'aria-label': 'Линия выше на 1 пиксель', onclick: () => nudgeGate(-1) }, '▲'),
       el('button', { class: 'btn small sq', type: 'button', 'aria-label': 'Линия ниже на 1 пиксель', onclick: () => nudgeGate(1) }, '▼'))));
+  const rb = (lbl, t, f) => el('button', { class: 'btn small sq', type: 'button', 'aria-label': lbl, onclick: f }, t);
+  box.append(el('div', { class: 'card nudge' },
+    el('span', { id: 'rotLbl', class: 'fl' }),
+    el('div', { class: 'row tight' }, rb('Повернуть против часовой на 0,1°', '↺', () => rotGate(-0.1)), rb('Повернуть по часовой на 0,1°', '↻', () => rotGate(0.1)), rb('Сбросить наклон', '0°', () => rotGate(null)), rb('Такой же наклон всем воротам', 'Всем', () => rotGate('all')))));
   box.append(el('div', { id: 'calStatus', class: 'status' }));
   updateNudge(); updateCalStatus();
 }
-function updateNudge() { const l = $('nudgeLbl'); if (l) l.textContent = 'Выбрана линия: ворота ' + (GS().sel + 1) + ' · сдвиг на 1 px кадра'; }
+function updateNudge() {
+  const l = $('nudgeLbl'); if (l) l.textContent = 'Выбрана линия: ворота ' + (GS().sel + 1) + ' · сдвиг на 1 px кадра';
+  const r = $('rotLbl'); if (r) r.textContent = 'Наклон ворот ' + (GS().sel + 1) + ': ' + fmt(gRot(GS(), GS().sel) * 57.2958, 1) + '° · тяни ↻ на кадре';
+}
 function updateCalStatus() {
   const box = $('calStatus'); if (!box) return;
   const cal = S.calib || recalc();
@@ -2174,7 +2251,7 @@ function prepareAnalysis() {
   ax.drawImage(F.cv, 0, 0, aw, ah);
   const gcal = new Uint8Array(aw * ah), d = ax.getImageData(0, 0, aw, ah).data;
   for (let i = 0, j = 0; i < gcal.length; i++, j += 4) gcal[i] = (77 * d[j] + 150 * d[j + 1] + 29 * d[j + 2]) >> 8;
-  const geo = buildGeometry(aw, ah, sortedBounds(), { vFar: Math.min(...S.calibs.map(c => c.vFar)) });
+  const geo = buildGeometry(aw, ah, sortedBounds(), { vFar: Math.min(...S.calibs.map(c => c.vFar - (c.til ? c.til.span : 0))) });
   const stab = new Stabilizer();
   const stat = vdMaskCars(ac, aw, ah, geo.stat);   // машины кадра калибровки в опору не берём
   let stabOk = CONFIG.stab.enabled ? stab.init(gcal, aw, ah, stat, geo.pivot) : false;
@@ -2268,7 +2345,7 @@ $('btnBack').addEventListener('click', goBack);
 
 
 /* =====================  Профили (localStorage)  ===================== */
-const packSet = s => ({ n: s.n, v: s.v.slice(0, s.n), aim: s.aim.slice(0, 6), mode: s.mode, markM: s.markM, steps: s.steps.slice(0, 5), meters: s.meters.slice(0, 5) });
+const packSet = s => ({ n: s.n, v: s.v.slice(0, s.n), aim: s.aim.slice(0, 6), rot: (s.rot || []).slice(0, 6), mode: s.mode, markM: s.markM, steps: s.steps.slice(0, 5), meters: s.meters.slice(0, 5) });
 function snapshotProfile(name) {
   const g = S.gates, L = S.lanes;
   return {
@@ -2282,7 +2359,7 @@ function saveProfile(name) { const all = lsGet(); all[name] = snapshotProfile(na
 function deleteProfile(name) { const all = lsGet(); delete all[name]; lsSet(all); }
 function readSet(g, pg) {
   g.n = clamp(pg.n | 0, CONFIG.calib.minGates, CONFIG.calib.maxGates);
-  g.v = (pg.v || []).slice(0, g.n).map(Number); g.aim = (pg.aim || []).slice(0, 6).map(Number);
+  g.v = (pg.v || []).slice(0, g.n).map(Number); g.aim = (pg.aim || []).slice(0, 6).map(Number); g.rot = (pg.rot || []).slice(0, 6).map(Number);
   g.mode = pg.mode === 'manual' ? 'manual' : 'marks';
   g.markM = pg.markM > 0 ? +pg.markM : CONFIG.calib.defaultMarkM;
   g.steps = (pg.steps || []).slice(0, 5).map(x => Math.max(1, x | 0)); while (g.steps.length < 5) g.steps.push(1);
@@ -2918,4 +2995,4 @@ vdLoad();   // детектор машин грузится в фоне; пок�
 
 </script>
 </body>
-  </html>
+</html>
