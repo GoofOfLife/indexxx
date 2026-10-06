@@ -98,6 +98,7 @@ input[type=text],select{width:100%;min-height:48px;border-radius:12px;border:1px
 .dot{width:10px;height:10px;border-radius:50%;background:#6b7684;display:inline-block}
 .st-ok .dot{background:var(--ok)}
 .st-init .dot{background:var(--warn)}
+.st-coast .dot{background:var(--warn)}
 .st-lost .dot{background:var(--bad);animation:pulse .8s infinite}
 @keyframes pulse{50%{opacity:.3}}
 #stageMsg{position:absolute;left:50%;top:44%;transform:translate(-50%,-50%);z-index:6;max-width:86%;text-align:center;padding:12px 16px;border-radius:14px;background:rgba(10,12,15,.82);border:1px solid rgba(255,255,255,.16);font-weight:700;font-size:17px;line-height:1.3;pointer-events:none}
@@ -237,22 +238,35 @@ const CONFIG = {
   stab: {
     enabled: true,
     block: 32,                 // размер опорного блока (уровень L0), px
-    maxBlocks: 24,             // макс. число опорных блоков
+    maxBlocks: 40,             // макс. число опорных блоков (было 24)
     minBlocks: 4,              // меньше — стабилизация недоступна
-    minTexture: 25,            // мин. текстурность блока (средний квадрат градиента)
-    searchRadius: 40,          // радиус расширенного поиска, px анализа (≈ ±120 px при 1080p)
-    iterL1: 6, iterL0: 5,      // число итераций LK на уровнях
-    convTol: 0.25,             // сходимость LK: шаг меньше этого, px
-    reweightIters: 2,          // сколько первых итераций LK пересчитывать веса блоков
-    rhoMax: 0.5,               // блок — «свой», если дисперсия невязки не больше этой доли дисперсии блока
-    rhoOk: 0.40,               // оценка надёжна, если средняя доля невязки у «своих» блоков не больше этой
-    errFloor: 4,               // мин. допуск невязки блока, уровни серого
-    minInlierFrac: 0.4,        // мин. доля блоков-инлайеров
-    maxShiftFrac: 0.05,        // пауза, если сдвиг больше доли высоты кадра
-    resumeFrames: 3,           // нормальных кадров подряд до возобновления замеров
-    lostFrames: 4,             // сбойных кадров подряд до паузы замеров
+    minTexture: 12,            // мин. текстурность блока (было 25): берём и слабые детали
+    searchRadius: 120,         // радиус расширенного поиска, px анализа (было 40): ±треть высоты кадра
+    iterL2: 8, iterL1: 8, iterL0: 6, // число итераций LK на уровнях (пирамида L2→L1→L0)
+    convTol: 0.5,              // сходимость LK: шаг меньше этого, px
+    reweightIters: 3,          // сколько первых итераций LK пересчитывать веса блоков
+    rhoMax: 0.8,               // блок — «свой», если дисперсия невязки не больше этой доли дисперсии блока (было 0.5)
+    rhoOk: 0.70,               // оценка надёжна, если средняя доля невязки у «своих» блоков не больше этой (было 0.40)
+    errFloor: 5,               // мин. допуск невязки блока, уровни серого
+    minInlierFrac: 0.25,       // мин. доля блоков-инлайеров (было 0.4)
+    maxShiftFrac: 0.30,        // пауза, если сдвиг больше доли высоты кадра (было 0.05)
+    warnShiftFrac: 0.10,       // замер идёт, но на экране подсказка «кадр сдвинут», если сдвиг больше
+    resumeFrames: 2,           // хороших кадров подряд до возобновления после потери
+    coastSec: 0.8,             // сколько с терпим сбои оценки (кадры пропускаются, треки не сбрасываются), прежде чем «сдвиг!»
+    initSec: 2.0,              // сколько с искать опорные детали при старте
     rollPrior: 0.02,           // слабая регуляризация угла крена
-    maxRoll: 0.06              // макс. угол поворота, рад
+    maxRoll: 0.17,             // макс. угол поворота, рад (≈10°; было 0.06)
+    detect: {                  // детектор машин на устройстве (MediaPipe Object Detector, EfficientDet-Lite0): блоки под машинами в опору не берутся
+      enabled: true,
+      lib: './models/vision_bundle.mjs', wasm: './models/wasm', model: './models/efficientdet_lite0.tflite',   // локальные файлы — интернет не нужен
+      cdn: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14',   // запасной источник библиотеки и wasm, если локальных файлов нет
+      modelCdn: 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite',
+      classes: ['car', 'truck', 'bus', 'motorcycle'],   // классы COCO, считающиеся машинами
+      score: 0.35,             // мин. уверенность детектора
+      pad: 0.15,               // запас вокруг рамки машины, доля её размера
+      everyMs: 120,            // как часто запускать детектор на видео, мс (один запуск ≈ 30–60 мс)
+      holdSec: 0.5             // сколько рамки машин держатся без нового запуска, с
+    }
   },
   // ---------- Обнаружение движения ----------
   motion: {
@@ -279,6 +293,7 @@ const CONFIG = {
     minAreaPx: 50,             // мин. площадь блоба, px
     minWidthLane: 0.30,        // мин. ширина блоба, доля ширины полосы
     minAreaLane2: 0.04,        // мин. площадь, доля (ширина полосы)²
+    minAreaMaxPx: 900,         // потолок этого порога, px: у близких машин (широкая полоса) квадрат не должен выбрасывать неполно найденные блобы
     minHeightLane: 0.12,       // мин. высота блоба, доля ширины полосы
     minFill: 0.18,             // мин. заполненность рамки блоба (площадь / площадь рамки)
     mergeGapPx: 6,             // слияние близких блобов одной полосы, px
@@ -493,11 +508,11 @@ function down2(src, sw, sh, dst) {
 }
 
 class Stabilizer {
-  constructor(cfg) { this.cfg = cfg || CONFIG.stab; this.ok = false; this.nb = 0; this.blocks = []; }
+  constructor(cfg) { this.cfg = cfg || CONFIG.stab; this.ok = false; this.nb = 0; this.blocks = []; this.nSkip = 0; this._skip = null; }
 
   init(gray, w, h, staticMask, pivot) {
     const cfg = this.cfg;
-    this.w = w; this.h = h; this.pivot = pivot; this.ok = false;
+    this.w = w; this.h = h; this.pivot = pivot; this.ok = false; this.nSkip = 0; this._skip = null;
     const l0 = Float32Array.from(gray);
     const w1 = w >> 1, h1 = h >> 1, w2 = w1 >> 1, h2 = h1 >> 1;
     const l1 = new Float32Array(w1 * h1), l2 = new Float32Array(w2 * h2);
@@ -539,6 +554,20 @@ class Stabilizer {
     return this.ok;
   }
 
+  // boxes — рамки машин в калибровочных координатах {x0,y0,x1,y1}: блоки, задетые рамкой, не участвуют в оценке (если останется меньше minBlocks — исключения игнорируются)
+  setExclusions(boxes) {
+    const B = this.cfg.block, n = this.nb;
+    if (!this._skip || this._skip.length !== n) this._skip = new Uint8Array(n);
+    let k = 0;
+    for (let i = 0; i < n; i++) {
+      const c = this.blocks[i]; let hit = 0;
+      for (const r of boxes) if (c.x0 < r.x1 && c.x0 + B > r.x0 && c.y0 < r.y1 && c.y0 + B > r.y0) { hit = 1; break; }
+      this._skip[i] = hit; k += hit;
+    }
+    if (n - k < this.cfg.minBlocks) { this._skip.fill(0); k = 0; }
+    this.nSkip = k;
+  }
+
   _level(l, picked) {
     const B = this.cfg.block, s = 1 << l, img = this.cal[l], W = img.w, Hh = img.h, d = img.d;
     const st = l === 0 ? 2 : 1, px = this.pivot.x / s, py = this.pivot.y / s;
@@ -576,7 +605,7 @@ class Stabilizer {
   // Один уровень Гаусса–Ньютона (обратно-композиционный LK, сдвиг + поворот, смещение яркости по блоку, робастные веса блоков)
   _lk(lv, cur, p, iters) {
     const cfg = this.cfg, nb = lv.nb, W = cur.w, Hh = cur.h, d = cur.d;
-    const gb = this._gb, eb = this._eb, wb = this._wb, nv = this._nv;
+    const gb = this._gb, eb = this._eb, wb = this._wb, nv = this._nv, sk = this.nSkip ? this._skip : null;
     let inl = 0, rho = 99, fail = false, conv = false, lastStep = 99;
     const floor2 = cfg.errFloor * cfg.errFloor;
     for (let it = 0; it < iters; it++) {
@@ -584,6 +613,7 @@ class Stabilizer {
       let nvalid = 0;
       for (let b = 0; b < nb; b++) {
         let g0 = 0, g1 = 0, g2 = 0, se = 0, se2 = 0, cnt = 0;
+        if (sk && sk[b]) { nv[b] = 0; eb[b] = 1e9; continue; }
         const k1 = lv.be[b];
         for (let k = lv.bs[b]; k < k1; k++) {
           const qx = lv.X[k] + tx - th * lv.UY[k], qy = lv.Y[k] + ty + th * lv.UX[k];
@@ -630,76 +660,192 @@ class Stabilizer {
     return { p, inl, rho, conv, fail, step: lastStep };
   }
 
-  _refine(cur0, cur1, p0) {
-    const cfg = this.cfg;
-    let p = [p0[0] / 2, p0[1] / 2, p0[2]];
+  // Пирамида L2 → L1 → L0. Если на полном разрешении кадр смазан (оценка не проходит), принимаем результат уровня L1
+  _refine(cur0, cur1, cur2, p0) {
+    const cfg = this.cfg, need = Math.max(cfg.minBlocks, Math.ceil(cfg.minInlierFrac * (this.nb - this.nSkip)));
+    const bad = { ok: false, p: p0.slice(), inl: 0, rho: 99 };
+    let p = [p0[0] / 4, p0[1] / 4, p0[2]];
+    const r2 = this._lk(this.levels[2], cur2, p, cfg.iterL2);
+    if (r2.fail) return bad;
+    p = [r2.p[0] * 2, r2.p[1] * 2, r2.p[2]];
     const r1 = this._lk(this.levels[1], cur1, p, cfg.iterL1);
-    if (r1.fail) return { ok: false, p: p0.slice(), inl: 0, rho: 99 };
-    p = [r1.p[0] * 2, r1.p[1] * 2, r1.p[2]];
-    const r0 = this._lk(this.levels[0], cur0, p, cfg.iterL0);
-    if (r0.fail) return { ok: false, p: p0.slice(), inl: 0, rho: 99 };
-    const need = Math.max(cfg.minBlocks, Math.ceil(cfg.minInlierFrac * this.nb));
-    return { ok: r0.inl >= need && r0.rho <= cfg.rhoOk && r0.conv, p: r0.p, inl: r0.inl, rho: r0.rho, step: r0.step };
+    if (r1.fail) return bad;
+    const pL1 = [r1.p[0] * 2, r1.p[1] * 2, r1.p[2]];
+    const ok1 = r1.inl >= need && r1.rho <= cfg.rhoOk && r1.step < 2 * cfg.convTol;
+    const r0 = this._lk(this.levels[0], cur0, pL1.slice(), cfg.iterL0);
+    if (!r0.fail) {
+      const ok0 = r0.inl >= need && r0.rho <= cfg.rhoOk && r0.step < 2 * cfg.convTol;
+      if (ok0 || !ok1) return { ok: ok0, p: r0.p, inl: r0.inl, rho: r0.rho, step: r0.step };
+    }
+    return ok1 ? { ok: true, p: pL1, inl: r1.inl, rho: r1.rho, step: r1.step * 2, coarse: true } : bad;
   }
 
-  // Расширенный поиск целочисленного сдвига на уровне L2 (устойчивый SAD без смещения яркости)
+  // Расширенный поиск целочисленного сдвига на уровне L2: грубая сетка (шаг 3) на ±searchRadius + уточнение ±2 у лучших + окрестность прогноза.
+  // Возвращает до 3 кандидатов [tx, ty, 0] (px L0), лучшие первыми. Мера — устойчивый SAD без смещения яркости по лучшей половине блоков.
   _search(cur2, prior) {
     const cfg = this.cfg, lv = this.levels[2], W = lv.w, Hh = lv.h, nb = lv.nb;
-    const R = Math.max(2, Math.ceil(cfg.searchRadius / 4));
-    const centers = [[0, 0, R]];
-    if (prior && Math.hypot(prior[0], prior[1]) / 4 > R * 0.5) centers.push([Math.round(prior[0] / 4), Math.round(prior[1] / 4), Math.ceil(R / 2)]);
-    const costs = new Float64Array(nb), keep = Math.max(3, Math.ceil(nb * 0.6)), srt = new Float64Array(nb);
-    let best = Infinity, bx = 0, by = 0;
-    for (const [cx0, cy0, Rr] of centers) {
-      for (let dy = cy0 - Rr; dy <= cy0 + Rr; dy++) for (let dx = cx0 - Rr; dx <= cx0 + Rr; dx++) {
-        let bad = 0, m = 0;
-        for (let b = 0; b < nb; b++) {
-          const k0 = lv.bs[b], k1 = lv.be[b];
-          let sI = 0, sT = 0, oob = false;
-          for (let k = k0; k < k1; k++) {
-            const x = lv.X[k] + dx, y = lv.Y[k] + dy;
-            if (x < 0 || y < 0 || x >= W || y >= Hh) { oob = true; break; }
-            sI += cur2[y * W + x]; sT += lv.T[k];
-          }
-          if (oob) { bad++; continue; }
-          const off = (sI - sT) / (k1 - k0);
-          let c = 0;
-          for (let k = k0; k < k1; k++) {
-            const df = Math.abs(cur2[(lv.Y[k] + dy) * W + lv.X[k] + dx] - lv.T[k] - off);
-            c += df > 30 ? 30 : df;
-          }
-          c /= (k1 - k0);
-          let j = m++;
-          while (j > 0 && srt[j - 1] > c) { srt[j] = srt[j - 1]; j--; }
-          srt[j] = c;
+    const R = Math.max(3, Math.ceil(cfg.searchRadius / 4)), ST = 2;
+    const act = nb - this.nSkip, sk = this.nSkip ? this._skip : null, keep = Math.max(3, Math.ceil(act * 0.5)), srt = new Float64Array(nb);
+    const cost = (dx, dy) => {
+      let bad = 0, m = 0;
+      for (let b = 0; b < nb; b++) {
+        if (sk && sk[b]) continue;
+        const k0 = lv.bs[b], k1 = lv.be[b];
+        let sI = 0, sT = 0, oob = false;
+        for (let k = k0; k < k1; k++) {
+          const x = lv.X[k] + dx, y = lv.Y[k] + dy;
+          if (x < 0 || y < 0 || x >= W || y >= Hh) { oob = true; break; }
+          sI += cur2[y * W + x]; sT += lv.T[k];
         }
-        if (bad > nb * 0.3 || m < keep) continue;
-        let tot = 0;
-        for (let j = 0; j < keep; j++) tot += srt[j];
-        if (tot < best) { best = tot; bx = dx; by = dy; }
+        if (oob) { bad++; continue; }
+        const off = (sI - sT) / (k1 - k0);
+        let c = 0;
+        for (let k = k0; k < k1; k++) {
+          const df = Math.abs(cur2[(lv.Y[k] + dy) * W + lv.X[k] + dx] - lv.T[k] - off);
+          c += df > 30 ? 30 : df;
+        }
+        c /= (k1 - k0);
+        let j = m++;
+        while (j > 0 && srt[j - 1] > c) { srt[j] = srt[j - 1]; j--; }
+        srt[j] = c;
       }
+      if (bad > act * 0.5 || m < keep) return Infinity;
+      let tot = 0;
+      for (let j = 0; j < keep; j++) tot += srt[j];
+      return tot;
+    };
+    const coarse = [];
+    for (let dy = -R; dy <= R; dy += ST) for (let dx = -R; dx <= R; dx += ST) { const c = cost(dx, dy); if (c < Infinity) coarse.push({ dx, dy, c }); }
+    coarse.sort((p, q) => p.c - q.c);
+    const seeds = [];
+    for (const c of coarse) { if (seeds.length >= 2) break; if (seeds.every(q => Math.hypot(q.dx - c.dx, q.dy - c.dy) > 2 * ST)) seeds.push({ dx: c.dx, dy: c.dy, r: 2 }); }
+    if (prior) seeds.push({ dx: Math.round(prior[0] / 4), dy: Math.round(prior[1] / 4), r: 4 });
+    const found = [];
+    for (const s of seeds) {
+      let best = null;
+      for (let dy = s.dy - s.r; dy <= s.dy + s.r; dy++) for (let dx = s.dx - s.r; dx <= s.dx + s.r; dx++) {
+        const c = cost(dx, dy);
+        if (c < Infinity && (!best || c < best.c)) best = { dx, dy, c };
+      }
+      if (best) found.push(best);
     }
-    return isFinite(best) ? [bx * 4, by * 4, 0] : null;
+    found.sort((p, q) => p.c - q.c);
+    const out = [];
+    for (const c of found) if (out.every(q => Math.hypot(q.dx - c.dx, q.dy - c.dy) > 1)) out.push(c);
+    return out.slice(0, 3).map(c => [c.dx * 4, c.dy * 4, 0]);
   }
 
-  // gray — Uint8Array w*h; prev — предыдущая оценка [tx,ty,th] или null; force — принудительный расширенный поиск
+  // gray — Uint8Array w*h; prev — прогноз/предыдущая оценка [tx,ty,th] или null; force — принудительный расширенный поиск
   estimate(gray, prev, force) {
-    const w = this.w, h = this.h, w1 = w >> 1, h1 = h >> 1;
+    const w = this.w, h = this.h, w1 = w >> 1, h1 = h >> 1, w2 = w1 >> 1, h2 = h1 >> 1;
     const cur0 = { w, h, d: gray };
-    down2(gray, w, h, this.cur1);
-    const cur1 = { w: w1, h: h1, d: this.cur1 };
+    down2(gray, w, h, this.cur1); down2(this.cur1, w1, h1, this.cur2);
+    const cur1 = { w: w1, h: h1, d: this.cur1 }, cur2 = { w: w2, h: h2, d: this.cur2 };
     let res = null;
     if (!prev) force = true;
-    if (!force) res = this._refine(cur0, cur1, prev);
+    if (!force) res = this._refine(cur0, cur1, cur2, prev);
     if (force || !res.ok) {
-      down2(this.cur1, w1, h1, this.cur2);
-      const s = this._search(this.cur2, prev);
-      if (s) {
-        const r2 = this._refine(cur0, cur1, s);
-        if (!res || r2.ok || r2.inl > res.inl) res = r2;
+      for (const sp of this._search(this.cur2, prev)) {
+        const r = this._refine(cur0, cur1, cur2, sp);
+        if (!res || (r.ok && !res.ok) || (r.ok === res.ok && r.inl > res.inl)) res = r;
+        if (r.ok) break;
       }
     }
     return res || { ok: false, p: [0, 0, 0], inl: 0, rho: 99 };
+  }
+}
+
+/* ---------- Детектор машин на устройстве (MediaPipe Object Detector, EfficientDet-Lite0) ---------- */
+// Блоки под машинами — плохая опора: машина едет или уедет. Рамки машин: на кадре калибровки — маска до выбора блоков; на видео — исключение блоков на лету.
+const VD = { det: null, st: 'idle', cal: null, t: 0, ms: 0, last: -1e9 };   // st: idle | loading | ready | fail
+async function vdLoad() {
+  const c = CONFIG.stab.detect;
+  if (!c.enabled || VD.st !== 'idle') return;
+  VD.st = 'loading';
+  const make = async (lib, wasm, model) => {
+    const mp = await import(lib), vis = await mp.FilesetResolver.forVisionTasks(wasm);
+    const mk = delegate => mp.ObjectDetector.createFromOptions(vis, { baseOptions: { modelAssetPath: model, delegate }, runningMode: 'VIDEO', scoreThreshold: c.score, categoryAllowlist: c.classes, maxResults: 12 });
+    try { return await mk('GPU'); } catch (_) { return mk('CPU'); }
+  };
+  try { VD.det = await make(c.lib, c.wasm, c.model); }
+  catch (e1) {
+    try { VD.det = await make(c.cdn + '/vision_bundle.mjs', c.cdn + '/wasm', c.modelCdn); }
+    catch (e2) { VD.st = 'fail'; console.warn('Детектор машин недоступен — стабилизация без него.', e1, e2); return; }
+  }
+  VD.st = 'ready';
+}
+async function vdWait(ms) { const t0 = performance.now(); while (VD.st === 'loading' && performance.now() - t0 < ms) await wait(50); }
+function vdRun(src, sx, sy) {   // src — video или canvas; рамки машин в координатах анализа (с запасом pad)
+  const c = CONFIG.stab.detect, t0 = performance.now(), out = [];
+  let res;
+  try { res = VD.det.detectForVideo(src, t0); } catch (e) { VD.det = null; VD.st = 'fail'; return null; }
+  for (const d of res.detections || []) {
+    const b = d.boundingBox; if (!b) continue;
+    const px = b.width * c.pad, py = b.height * c.pad;
+    out.push({ x0: (b.originX - px) * sx, y0: (b.originY - py) * sy, x1: (b.originX + b.width + px) * sx, y1: (b.originY + b.height + py) * sy });
+  }
+  VD.ms = 0.8 * VD.ms + 0.2 * (performance.now() - t0);
+  return out;
+}
+function vdMaskCars(cv, aw, ah, stat) {   // копия маски «статичных» пикселей с вырезанными машинами кадра калибровки
+  if (!VD.det) return stat;
+  const boxes = vdRun(cv, aw / cv.width, ah / cv.height);
+  if (!boxes || !boxes.length) return stat;
+  const m = stat.slice();
+  for (const b of boxes) for (let y = Math.max(0, b.y0 | 0); y < Math.min(ah, Math.ceil(b.y1)); y++) for (let x = Math.max(0, b.x0 | 0); x < Math.min(aw, Math.ceil(b.x1)); x++) m[y * aw + x] = 0;
+  return m;
+}
+function vdTick(video, t, p, pivot, aw, ah, stab) {   // p — текущая оценка позы: рамки переводятся в калибровочные координаты
+  const c = CONFIG.stab.detect, now = performance.now();
+  if (VD.det && video.videoWidth && now - VD.last >= c.everyMs) {
+    VD.last = now;
+    const b = vdRun(video, aw / video.videoWidth, ah / video.videoHeight);
+    if (!b) return;
+    VD.cal = b.map(r => {
+      const q = [warpInv(p, pivot, r.x0, r.y0), warpInv(p, pivot, r.x1, r.y0), warpInv(p, pivot, r.x0, r.y1), warpInv(p, pivot, r.x1, r.y1)];
+      return { x0: Math.min(...q.map(a => a[0])), x1: Math.max(...q.map(a => a[0])), y0: Math.min(...q.map(a => a[1])), y1: Math.max(...q.map(a => a[1])) };
+    });
+    VD.t = t; stab.setExclusions(VD.cal);
+  } else if (VD.cal && t - VD.t > c.holdSec) { VD.cal = null; stab.setExclusions([]); }
+}
+
+/* ---------- Автомат стабилизации: init → ok ⇄ coast → lost ---------- */
+// coast — оценка не прошла: кадры пропускаются, но треки и метки живут до coastSec (раньше сбрасывались после 4 кадров);
+// возвращается measure (обрабатывать ли кадр) и flush (завершить треки — потеря затянулась)
+class StabGate {
+  constructor(cfg) { this.cfg = cfg || CONFIG.stab; this.reset(); }
+  reset() { this.state = 'init'; this.p = [0, 0, 0]; this.last = null; this.vel = [0, 0]; this.t0 = null; this.tBad = null; this.good = 0; this.dyH = []; this.sh = 0; }
+  predict(t) {   // прогноз позы на кадр t: последняя хорошая + половина скорости (экстраполяция с запасом)
+    const L = this.last;
+    if (!L) return null;
+    const dt = clamp(t - L.t, 0, 0.25);
+    return [L.p[0] + 0.5 * this.vel[0] * dt, L.p[1] + 0.5 * this.vel[1] * dt, L.p[2]];
+  }
+  update(res, t, ah) {
+    const c = this.cfg;
+    if (this.t0 === null) this.t0 = t;
+    this.sh = Math.hypot(res.p[0], res.p[1]);
+    const good = res.ok && this.sh <= c.maxShiftFrac * ah;
+    let flush = false;
+    if (good) {
+      const L = this.last;
+      if (L && t > L.t) { const dt = Math.min(t - L.t, 0.25); this.vel = [(res.p[0] - L.p[0]) / dt, (res.p[1] - L.p[1]) / dt]; }
+      this.last = { p: res.p, t }; this.tBad = null;
+      // dy: медиана по 3 кадрам только в покое (гасит шум); при движении берём как есть — без запаздывания
+      this.dyH.push(res.p[1]); if (this.dyH.length > 3) this.dyH.shift();
+      const md = median(this.dyH);
+      this.p = [res.p[0], Math.abs(res.p[1] - md) < 0.7 ? md : res.p[1], res.p[2]];
+      if (this.state !== 'ok') {
+        this.good++;
+        if (this.state === 'coast' || this.good >= c.resumeFrames) { this.state = 'ok'; this.good = 0; }
+      }
+    } else {
+      this.good = 0; this.dyH.length = 0;
+      if (this.state === 'ok') { this.state = 'coast'; this.tBad = t; }
+      else if (this.state === 'coast') { if (t - this.tBad > c.coastSec) { this.state = 'lost'; flush = true; } }
+      else if (this.state === 'init' && t - this.t0 > c.initSec) this.state = 'lost';
+    }
+    return { measure: this.state === 'ok', flush };
   }
 }
 
@@ -989,7 +1135,7 @@ class MotionDetector {
       const lw = Math.max(8, laneWidthAt(g, b.yb, b.lane));
       const bw = b.x1 - b.x0 + 1;
       const bh = b.y1 - b.y0 + 1;
-      if (b.area < bc.minAreaPx || bw < bc.minWidthLane * lw || bh < bc.minHeightLane * lw || b.area < bc.minAreaLane2 * lw * lw) continue;
+      if (b.area < bc.minAreaPx || bw < bc.minWidthLane * lw || bh < bc.minHeightLane * lw || b.area < Math.min(bc.minAreaLane2 * lw * lw, bc.minAreaMaxPx)) continue;
       if (b.area < bc.minFill * bw * bh) continue;           // тонкие «нитки» вдоль разметки — не машины
       b.laneW = lw; b.bw = b.x1 - b.x0 + 1; b.xc = (b.x0 + b.x1 + 1) / 2;
       { const yy = clamp(b.yb, 0, ah - 1), N1 = g.N + 1, xl = g.xsAt[yy * N1 + b.lane - 1]; b.u = (b.xc - xl) / Math.max(1, lw); }
@@ -1020,7 +1166,13 @@ class MotionDetector {
     for (let y = Math.max(r0, yb - k); y <= yb - 1; y++) { A += m[y - r0]; na++; }
     for (let y = yb + 2; y <= r1; y++) { B += m[y - r0]; nb++; }
     if (!na) return yb + 1;
-    A /= na; B = nb ? B / nb : 0;
+    A /= na;
+    if (nb) B /= nb;
+    else {   // ниже кромки нет строк (край кадра): фон — типичный шум дороги, а не 0, иначе порог H занижен
+      let sv = 0, cn = 0; const vr = this.vr;
+      for (let x = b.bx0; x <= b.bx1; x++) { const i = yb * aw + x; if (map[i] === lane) { sv += vr[i]; cn++; } }
+      B = cn ? 0.8 * Math.sqrt(sv / cn) : 3;   // E|d| ≈ 0.8σ
+    }
     if (A - B < 6) return yb + 1;
     const H = B + 0.5 * (A - B);
     for (let y = Math.max(r0 + 1, yb - 1); y <= r1; y++) {
@@ -2024,7 +2176,9 @@ function prepareAnalysis() {
   for (let i = 0, j = 0; i < gcal.length; i++, j += 4) gcal[i] = (77 * d[j] + 150 * d[j + 1] + 29 * d[j + 2]) >> 8;
   const geo = buildGeometry(aw, ah, sortedBounds(), { vFar: Math.min(...S.calibs.map(c => c.vFar)) });
   const stab = new Stabilizer();
-  const stabOk = CONFIG.stab.enabled ? stab.init(gcal, aw, ah, geo.stat, geo.pivot) : false;
+  const stat = vdMaskCars(ac, aw, ah, geo.stat);   // машины кадра калибровки в опору не берём
+  let stabOk = CONFIG.stab.enabled ? stab.init(gcal, aw, ah, stat, geo.pivot) : false;
+  if (!stabOk && stat !== geo.stat && CONFIG.stab.enabled) stabOk = stab.init(gcal, aw, ah, geo.stat, geo.pivot);   // после вырезания опоры мало — как раньше
   return { aw, ah, ac, ax, gcal, geo, stab, stabOk };
 }
 function buildCheck(box) {
@@ -2450,11 +2604,12 @@ async function startRun() {
   if (!A.ok) { toast(A.msg); return; }
   const btn = $('btnNext'); btn.disabled = true;
   try {
+    if (VD.st === 'loading') await vdWait(4000);   // дать детектору машин дозагрузиться
     const P = prepareAnalysis();    // свежая подготовка по текущим точкам
     prep = P;
     Object.assign(R, {
       aw: P.aw, ah: P.ah, ax: P.ax, gray: new Uint8Array(P.aw * P.ah), geo: P.geo, stab: P.stab, stabOn: P.stabOk && CONFIG.stab.enabled, dyH: [],
-      det: (() => { const d = new MotionDetector(P.geo); d.seed(P.gcal); return d; })(), trk: new Tracker(S.calibs.slice(), P.ah, null, P.geo), p: [0, 0, 0], prevP: null, stabState: P.stabOk && CONFIG.stab.enabled ? 'init' : 'off',
+      det: (() => { const d = new MotionDetector(P.geo); d.seed(P.gcal); return d; })(), trk: new Tracker(S.calibs.slice(), P.ah, null, P.geo), p: [0, 0, 0], prevP: null, gate: new StabGate(), stabState: P.stabOk && CONFIG.stab.enabled ? 'init' : 'off',
       good: 0, bad: 0, ghosts: [], lastT: null, tNow: 0, timeMode: null, fpsLog: [], paused: false, ended: false, geoBad: false, hudT: 0,
       procEma: 0, refEma: 0, refineOff: false, nProc: 0, lastLow: 0, t0wall: performance.now(), shiftPx: 0, stabInfo: null, nBlobs: 0, lastRes: null
     });
@@ -2507,6 +2662,7 @@ function togglePause() {
 async function restartFile() {
   if (S.srcKind !== 'file' || !R.running) return;
   flushTracks(); R.det.reset(); R.lastT = null; R.ended = false; R.paused = false; R.ghosts = [];
+  if (R.gate) { R.gate.reset(); R.stabState = R.stabOn ? 'init' : 'off'; }
   $('btnPause').textContent = '⏸ Пауза'; setMsg('');
   await seekTo(0);
   try { await video.play(); } catch (_) {}
@@ -2568,34 +2724,22 @@ function processFrame(now, md) {
 
   // --- стабилизация
   const sc = CONFIG.stab;
+  let measure = true;
   if (R.stabOn) {
-    const force = R.stabState !== 'ok';
-    const res = R.stab.estimate(gray, R.prevP, force);
+    const G = R.gate;
+    vdTick(video, t, G.predict(t) || G.p, R.stab.pivot, aw, ah, R.stab);
+    const res = R.stab.estimate(gray, G.predict(t), G.state === 'init' || G.state === 'lost');
     R.lastRes = res;
-    const sh = Math.hypot(res.p[0], res.p[1]);
-    R.shiftPx = sh;
-    const good = res.ok && sh <= sc.maxShiftFrac * ah;
-    if (good) {
-      R.prevP = res.p; R.bad = 0;
-      R.dyH.push(res.p[1]); if (R.dyH.length > 3) R.dyH.shift();
-      R.p = [res.p[0], median(R.dyH), res.p[2]];     // dy сглажен медианой по 3 кадрам до вычитания сдвига
-      if (R.stabState !== 'ok') {
-        R.good++;
-        if (R.good >= sc.resumeFrames) { R.stabState = 'ok'; R.good = 0; }
-      }
-    } else {
-      R.good = 0; R.dyH.length = 0;
-      if (R.stabState === 'ok') {
-        // одиночный сбой оценки не прерывает замер: ждём несколько кадров подряд
-        if (++R.bad >= sc.lostFrames) { flushTracks(); R.stabState = 'lost'; }
-        else { updateHud(); return; }
-      } else if (R.stabState === 'init' && performance.now() - R.t0wall > 1500) R.stabState = 'lost';
-    }
+    const act = G.update(res, t, ah);
+    R.shiftPx = G.sh; R.stabState = G.state; R.p = G.p; R.prevP = G.last ? G.last.p : null;
+    if (act.flush) flushTracks();
+    measure = act.measure;
   } else { R.p = [0, 0, 0]; R.stabState = 'off'; }
   const tS = performance.now();
   tmAdd('grab', tG - tW0); tmAdd('stab', tS - tG);
   if (R.stabState === 'init') { setMsg('Ищу опорные детали кадра…'); R.procEma = 0.9 * R.procEma + 0.1 * (performance.now() - tW0); updateHud(); drawRun(); return; }
   if (R.stabState === 'lost') { setMsg('Держи ровнее — наведи как на калибровочном кадре (он просвечивает).'); updateHud(); drawRun(); return; }
+  if (!measure) { updateHud(); return; }     // coast: кадр пропущен, метки и треки не сбрасываются
 
   // --- обнаружение и трекинг
   const ready = R.det.step(gray, R.p, t);
@@ -2604,7 +2748,7 @@ function processFrame(now, md) {
   if (ready) {
     blobs = R.det.extract();
     refineBlobs(blobs, tW0);
-    setMsg('');
+    setMsg(R.stabOn && R.shiftPx > sc.warnShiftFrac * ah ? 'Кадр сдвинут — замер идёт, но точность ниже. Верни телефон как при калибровке.' : '');
   } else setMsg('Обучение фона…');
   R.nBlobs = blobs.length; R.blobs = blobs;
   const tD = performance.now(); tmAdd('det', tD - tS);
@@ -2659,7 +2803,7 @@ function drawRun() {
   if (!R.geo || !S.frozen) return;
   const geo = R.geo, aw = R.aw, ah = R.ah;
   const sx = V.w * V.k / aw, sy = V.h * V.k / ah;
-  const ok = R.stabState === 'ok' || R.stabState === 'off';
+  const ok = R.stabState === 'ok' || R.stabState === 'off' || R.stabState === 'coast';
   const p = ok ? R.p : [0, 0, 0], pv = geo.pivot;
   const map = (x, y) => { const q = warpFwd(p, pv, x, y); return [V.tx + q[0] * sx, V.ty + q[1] * sy]; };
   if (!ok) { g.globalAlpha = 0.4; g.drawImage(S.frozen.cv, V.tx, V.ty, V.w * V.k, V.h * V.k); g.globalAlpha = 1; }
@@ -2721,11 +2865,11 @@ function drawDebug(g, map, sx, sy, p) {
   // опорные блоки стабилизации
   if (R.stabOn && R.stab) {
     g.strokeStyle = 'rgba(80,255,150,.8)'; g.lineWidth = 1;
-    for (const c of R.stab.blocks) { const A = map(c.x0, c.y0), B = map(c.x0 + CONFIG.stab.block, c.y0 + CONFIG.stab.block); g.strokeRect(A[0], A[1], B[0] - A[0], B[1] - A[1]); }
+    R.stab.blocks.forEach((c, i) => { g.strokeStyle = R.stab.nSkip && R.stab._skip[i] ? 'rgba(255,80,80,.9)' : 'rgba(80,255,150,.8)'; const A = map(c.x0, c.y0), B = map(c.x0 + CONFIG.stab.block, c.y0 + CONFIG.stab.block); g.strokeRect(A[0], A[1], B[0] - A[0], B[1] - A[1]); });   // красные — под машинами
   }
   const f = fpsNow(), r = R.lastRes;
   g.font = '600 12px ui-monospace, Menlo, Consolas, monospace'; g.textAlign = 'left'; g.textBaseline = 'top';
-  const lines = ['dx=' + p[0].toFixed(2) + ' dy=' + p[1].toFixed(2) + ' θ=' + (p[2] * 57.296).toFixed(2) + '°', 'блоки ' + (r ? r.inl : '-') + '/' + R.stab.nb + ' rho=' + (r && isFinite(r.rho) ? r.rho.toFixed(2) : '-'), 'fps ' + f.src.toFixed(0) + ' / анализ ' + f.an.toFixed(0) + ' · кадр ' + R.procEma.toFixed(1) + ' мс', 'мс: захват ' + (R.tm && R.tm.grab ? R.tm.grab.toFixed(1) : '-') + ' · стаб ' + (R.tm && R.tm.stab ? R.tm.stab.toFixed(1) : '-') + ' · детект ' + (R.tm && R.tm.det ? R.tm.det.toFixed(1) : '-') + ' · трек ' + (R.tm && R.tm.trk ? R.tm.trk.toFixed(1) : '-'), 'блобов ' + R.nBlobs + ' · движ. ' + (100 * R.det.fgFrac).toFixed(1) + '% · кромка ' + (R.refineOff ? 'грубая' : 'уточн. ' + R.refEma.toFixed(1) + ' мс')];
+  const lines = ['dx=' + p[0].toFixed(2) + ' dy=' + p[1].toFixed(2) + ' θ=' + (p[2] * 57.296).toFixed(2) + '°', 'блоки ' + (r ? r.inl : '-') + '/' + R.stab.nb + (R.stab.nSkip ? ' (−' + R.stab.nSkip + ' под маш.)' : '') + ' rho=' + (r && isFinite(r.rho) ? r.rho.toFixed(2) : '-'), 'fps ' + f.src.toFixed(0) + ' / анализ ' + f.an.toFixed(0) + ' · кадр ' + R.procEma.toFixed(1) + ' мс', 'мс: захват ' + (R.tm && R.tm.grab ? R.tm.grab.toFixed(1) : '-') + ' · стаб ' + (R.tm && R.tm.stab ? R.tm.stab.toFixed(1) : '-') + ' · детект ' + (R.tm && R.tm.det ? R.tm.det.toFixed(1) : '-') + ' · трек ' + (R.tm && R.tm.trk ? R.tm.trk.toFixed(1) : '-'), 'блобов ' + R.nBlobs + ' · движ. ' + (100 * R.det.fgFrac).toFixed(1) + '% · кромка ' + (R.refineOff ? 'грубая' : 'уточн. ' + R.refEma.toFixed(1) + ' мс')];
   g.fillStyle = 'rgba(0,0,0,.65)'; g.fillRect(6, SH - 168, 330, lines.length * 16 + 8);
   g.fillStyle = '#b8f5c8'; lines.forEach((s, i) => g.fillText(s, 10, SH - 164 + i * 16));
 }
@@ -2746,7 +2890,7 @@ function updateHud(force) {
   if (low && now - R.lastLow > 30000 && R.nProc > 30) { R.lastLow = now; toast('Низкий fps (' + f.an.toFixed(0) + '): точность замера снижена. Включи режим 60 fps и закрой другие приложения.', 5000); }
   const st = $('chStab'), s = R.stabState;
   st.className = 'chip st-' + (s || 'off');
-  st.lastElementChild.textContent = s === 'ok' ? 'стаб.' : (s === 'off' ? 'без стаб.' : (s === 'init' ? 'поиск…' : 'сдвиг!'));
+  st.lastElementChild.textContent = s === 'ok' ? 'стаб.' : (s === 'off' ? 'без стаб.' : (s === 'init' ? 'поиск…' : (s === 'coast' ? 'держу…' : 'сдвиг!')));
   $('chLimit').firstElementChild.textContent = String(S.limit);
   $('chCnt').firstElementChild.textContent = String(S.passes.length);
 }
@@ -2769,8 +2913,9 @@ function init() {
   else if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) toast('Этот браузер не даёт доступ к камере. Можно работать с видеофайлом.', 6000);
 }
 init();
+vdLoad();   // детектор машин грузится в фоне; пока не готов — стабилизация работает как раньше
 /* ==== APP:END ==== */
 
 </script>
 </body>
-</html>
+  </html>
