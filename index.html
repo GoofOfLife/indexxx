@@ -327,7 +327,7 @@ const CONFIG = {
     minSpeedKmh: 8,            // медленнее — не машина
     pendingMaxSec: 2.5,        // сколько показывать «…» после появления нижней кромки (пока кромка у края кадра — без ограничения)
     confirmFrames: 3,          // кадров с блобом до показа метки
-    finalMinPts: 8, finalMaxRmsM: 0.6, // условия итогового проезда
+    finalMinPts: 5, finalMaxRmsM: 0.6, // условия итогового проезда
     dupOverlap: 0.5,           // новый блоб над существующим треком с таким перекрытием по x — осколок, не машина
     // --- «не уверен — не меряй» ---
     minShowPts: 3, minShowWinSec: 0.4, minShowPath: 8, maxStepKmh: 3,   // число показывается, если точек не меньше и окно не короче (с)
@@ -1506,7 +1506,8 @@ class Tracker {
     }
     tr.stable++; tr.jumps = 0;
     const nMin = tr.blob && tr.blob.det && vdGate() ? Math.min(3, tc.minShowPts) : tc.minShowPts;   // Т1.3: рамка детектора подтверждает машину — хватает 3 точек
-    const okShow = tr.stable >= tc.showStable && n >= nMin && tr.win >= tc.minShowWinSec && tr.moved && tr.path >= Math.max(tc.minTravelM, tc.minShowPath);
+    const fastDet = !!(tr.blob && tr.blob.det && vdGate());   // машина подтверждена рамкой детектора — пороги мягче
+    const okShow = tr.stable >= tc.showStable && n >= nMin && tr.win >= (fastDet ? 0.6 : 1) * tc.minShowWinSec && tr.moved && tr.path >= (fastDet ? tc.minTravelM : Math.max(tc.minTravelM, tc.minShowPath));
     tr.fit = { icpt: f.icpt, slope: f.slope, tm0: f.tm };
     // фильтр скорости: Калман с ограничением |dv/dt| ≤ maxAccel (видео-время)
     const fl = tr.flt;
@@ -2741,7 +2742,7 @@ function countMissed(t) {   // машина детектора в зоне за�
   for (const r of VD.cal) {
     const cx = (r.x0 + r.x1) / 2, yb = r.y1, y = clamp(Math.round(yb), 0, ah - 1);
     if (yb < geo.y0 + 0.1 * ah || yb > ah * 0.97 || cx < geo.rowX0[y] || cx > geo.rowX1[y]) continue;
-    if (R.trk.tracks.some(tr => tr.shown && tr.blob && cx >= r.x0 && cx <= r.x1 && tr.y >= r.y0 && tr.y <= r.y1 + 6)) continue;
+    if (R.trk.tracks.some(tr => (tr.shown || t - tr.t0 < 1.2) && tr.blob && cx >= r.x0 && cx <= r.x1 && tr.y >= r.y0 && tr.y <= r.y1 + 6)) continue;
     if (t - R.missT > 1) { R.cnt.missed++; refreshSum(); if (R.log.length < 5000) R.log.push([t.toFixed(2), 'missed', '', '', '', '', 'машина детектора без числа']); }
     R.missT = t; return;
   }
@@ -3119,4 +3120,4 @@ vdLoad();   // детектор машин грузится в фоне; пок�
 
 </script>
 </body>
-  </html>
+</html>
