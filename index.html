@@ -240,7 +240,8 @@ const CONFIG = {
   stab: {
     enabled: true,
     block: 32,                 // размер опорного блока (уровень L0), px
-    maxBlocks: 40,             // макс. число опорных блоков (было 24)
+    maxBlocks: 28,             // макс. число опорных блоков (было 24)
+    calmFrames: 8, calmEvery: 3, calmPx: 0.6,   // камера стоит (сдвиг < calmPx px за кадр, calmFrames кадров подряд): тяжёлую оценку — раз в calmEvery кадров
     minBlocks: 4,              // меньше — стабилизация недоступна
     minTexture: 12,            // мин. текстурность блока (было 25): берём и слабые детали
     searchRadius: 120,         // радиус расширенного поиска, px анализа (было 40): ±треть высоты кадра
@@ -321,19 +322,19 @@ const CONFIG = {
     maxRelErr: 0.04,           // окно расширяется назад, пока ожидаемая погрешность скорости больше этой (доля); до неё метка без «~»
     showErr: 0.10,             // число показывается при погрешности не больше этой (выше maxRelErr — с «~»), иначе «…»
     minWinSec: 0.15, winMaxSec: 1.5, // ширина окна регрессии, с (минимум 3 точки)
-    maxAccel: 3,               // ограничение |dv/dt| фильтра скорости, м/с² (видео-время)
+    maxAccel: 5,               // ограничение |dv/dt| фильтра скорости, м/с² (видео-время)
     maxPxMeters: 0.5,          // предупреждение на шаге 6: 1 px кадра в зоне больше стольких метров
     minSpeedKmh: 8,            // медленнее — не машина
-    pendingMaxSec: 1.5,        // сколько показывать «…» после появления нижней кромки (пока кромка у края кадра — без ограничения)
+    pendingMaxSec: 2.5,        // сколько показывать «…» после появления нижней кромки (пока кромка у края кадра — без ограничения)
     confirmFrames: 3,          // кадров с блобом до показа метки
     finalMinPts: 6, finalMaxRmsM: 0.8, // условия итогового проезда
     dupOverlap: 0.5,           // новый блоб над существующим треком с таким перекрытием по x — осколок, не машина
     // --- «не уверен — не меряй» ---
-    minShowPts: 4, minShowWinSec: 0.3,   // число показывается, если точек не меньше и окно не короче (с)
+    minShowPts: 4, minShowWinSec: 0.2,   // число показывается, если точек не меньше и окно не короче (с)
     showStable: 2, stableKmh: 15,        // …и последние N оценок подряд отличаются не больше чем на это, км/ч
-    jumpKmh: 25, maxJumps: 3,            // после показа скачок больше этого — выброс (игнор); N скачков подряд — замер заново
+    jumpKmh: 40, maxJumps: 3, snapKmh: 12,            // после показа скачок больше этого — выброс (игнор); N скачков подряд — замер заново
     maxLiveRmsM: 1.0, maxSpeedKmh: 220,  // невязка прямой s(t), м; потолок правдоподобной скорости
-    maxSpreadKmh: 35, minTravelM: 5,     // проезд не записывается, если скорость «гуляла» сильнее или путь короче
+    maxSpreadKmh: 50, minTravelM: 4,     // проезд не записывается, если скорость «гуляла» сильнее или путь короче
     minMovePx: 8, dupGapPx: 10,         // трек считается машиной, только если сместился на столько px; ближе — дубль
     maxPasses: 500             // сколько проездов хранить в списке
   },
@@ -1456,23 +1457,19 @@ class Tracker {
     const f = wlsLine(P, i0, n - 1);
     if (!f) return;
     tr.err = f.rel; tr.win = t - P[i0].t;
-    if (!(f.rel <= tc.showErr) || f.rms > tc.maxLiveRmsM) { tr.stable = 0; return; }   // ненадёжно: «…» или прежнее значение
+    if (!(f.rel <= tc.showErr) || f.rms > tc.maxLiveRmsM) return;   // ненадёжно: «…» или прежнее значение
     const fk = Math.abs(f.slope) * 3.6, prevK = tr.lastSlope == null ? null : Math.abs(tr.lastSlope) * 3.6;
-    if (fk > tc.maxSpeedKmh) { tr.stable = 0; return; }
-    // согласованность: оценки подряд должны совпадать; резкий скачок — выброс (пятно, осколок), его не принимаем
-    const jump = prevK != null && Math.abs(fk - prevK) > (tr.shown ? tc.jumpKmh : tc.stableKmh);
-    if (!tr.shown || !jump) tr.lastSlope = f.slope;
-    if (jump) {
-      tr.stable = 0;
-      if (tr.shown && ++tr.jumps >= tc.maxJumps) { tr.pts = []; tr.fit = null; tr.flt = null; tr.shown = false; tr.kmh = null; tr.minK = Infinity; tr.maxK = 0; tr.jumps = 0; tr.lastSlope = null; tr.moved = false; tr.x0 = tr.x; tr.y0 = tr.y; }
-      return;
-    }
-    tr.stable++; tr.jumps = 0;
-    const okShow = tr.stable >= tc.showStable && n >= tc.minShowPts && tr.win >= tc.minShowWinSec && tr.moved && Math.abs(P[n - 1].s - P[0].s) >= tc.minTravelM;
+    if (fk > tc.maxSpeedKmh) return;
+    // одиночный скачок — выброс (не принимаем); повторяющийся — это новая скорость: принимаем и перезапускаем фильтр
+    const jump = prevK != null && Math.abs(fk - prevK) > tc.jumpKmh;
+    if (jump && ++tr.jumps < tc.maxJumps) return;
+    if (jump) tr.flt = null;
+    tr.jumps = 0; tr.lastSlope = f.slope;
+    const okShow = n >= tc.minShowPts && tr.win >= tc.minShowWinSec && tr.moved && Math.abs(P[n - 1].s - P[0].s) >= tc.minTravelM;
     tr.fit = { icpt: f.icpt, slope: f.slope, tm0: f.tm };
     // фильтр скорости: Калман с ограничением |dv/dt| ≤ maxAccel (видео-время)
     const fl = tr.flt;
-    if (!fl) tr.flt = { v: f.slope, P: f.sig * f.sig, t };
+    if (!fl || (f.rel <= tc.maxRelErr && Math.abs(f.slope - fl.v) * 3.6 > tc.snapKmh)) tr.flt = { v: f.slope, P: f.sig * f.sig, t };
     else {
       const lim = tc.maxAccel * Math.max(0, t - fl.t);
       fl.P += lim * lim;
@@ -2843,7 +2840,14 @@ function processFrame(now, md) {
   if (R.stabOn) {
     const G = R.gate;
     vdTick(video, t, G.predict(t) || G.p, R.stab.pivot, aw, ah, R.stab);
-    const res = R.stab.estimate(gray, G.predict(t), G.state === 'init' || G.state === 'lost');
+    let res;
+    if (G.state === 'ok' && R.lastRes && (R.calmN || 0) >= sc.calmFrames && (R.calmK = ((R.calmK || 0) + 1) % sc.calmEvery) !== 0) {
+      res = { ok: true, p: G.p.slice(), inl: R.lastRes.inl, rho: R.lastRes.rho };   // камера стоит: берём прошлую позу
+    } else {
+      res = R.stab.estimate(gray, G.predict(t), G.state === 'init' || G.state === 'lost');
+      const q = G.p, mv = res.ok ? Math.hypot(res.p[0] - q[0], res.p[1] - q[1]) + 200 * Math.abs(res.p[2] - q[2]) : 99;
+      R.calmN = G.state === 'ok' && mv < sc.calmPx ? (R.calmN || 0) + 1 : 0;
+    }
     R.lastRes = res;
     const act = G.update(res, t, ah);
     R.shiftPx = G.sh; R.stabState = G.state; R.p = G.p; R.prevP = G.last ? G.last.p : null;
@@ -3034,4 +3038,4 @@ vdLoad();   // детектор машин грузится в фоне; пок�
 
 </script>
 </body>
-</html>
+  </html>
