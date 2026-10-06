@@ -267,7 +267,7 @@ const CONFIG = {
       classes: ['car', 'truck', 'bus', 'motorcycle'],   // классы COCO, считающиеся машинами
       score: 0.35,             // мин. уверенность детектора
       pad: 0.15,               // запас вокруг рамки машины, доля её размера
-      everyMs: 120,            // как часто запускать детектор на видео, мс (один запуск ≈ 30–60 мс)
+      everyMs: 170, idleMs: 350, fastMs: 100, share: 0.3,   // детектор, мс: при движении/треках (≈6/с); без движения (≈3/с); вне очереди при неподтверждённом блобе; доля времени, которую он может занимать
       holdSec: 0.5             // сколько рамки машин держатся без нового запуска, с
     }
   },
@@ -351,7 +351,8 @@ const CONFIG = {
     spanFrac: 0.6              // доля ширины нижней кромки, по которой усредняем
   },
   // ---------- Видеофайл ----------
-  file: { adaptiveRate: true, minRate: 0.2, coverageMin: 0.8 }, // замедлять воспроизведение, если анализ пропускает больше 20% кадров
+  file: { adaptiveRate: false, minRate: 0.2, coverageMin: 0.8 }, // замедление воспроизведения выключено: пропуск кадров вместо замедления
+  perf: { auto: true, anFps: 20, minFps: 12, maxFps: 30, hiBusy: 0.7, loBusy: 0.45 }, // анализ ≈20 кадров/с независимо от камеры; AUTO LOAD двигает его в 12–30
   // ---------- Лимит, цвета ----------
   limit: { default: 50, presets: [20, 30, 40, 50, 60, 70, 80, 90], yellowOver: 10 },
   // ---------- Интерфейс ----------
@@ -841,7 +842,9 @@ function vdMaskCars(cv, aw, ah, stat) {   // копия маски «стати�
 }
 function vdTick(video, t, p, pivot, aw, ah, stab) {   // p — текущая оценка позы: рамки переводятся в калибровочные координаты
   const c = CONFIG.stab.detect, now = performance.now();
-  if (VD.det && video.videoWidth && now - VD.last >= c.everyMs) {
+  const busy = R.nBlobs > 0 || (R.trk && R.trk.tracks.length > 0), fresh = vdGate() && R.blobs && R.blobs.some(b => b.usable && !b.det);
+  const iv = Math.max(fresh ? c.fastMs : busy ? c.everyMs : c.idleMs, VD.ms / c.share) * (R.hi ? 1.5 : 1);
+  if (VD.det && video.videoWidth && now - VD.last >= iv) {
     VD.last = now;
     const b = vdRun(video, aw / video.videoWidth, ah / video.videoHeight);
     if (!b) return;
@@ -2830,7 +2833,7 @@ async function startRun() {
       aw: P.aw, ah: P.ah, ax: P.ax, gray: new Uint8Array(P.aw * P.ah), geo: P.geo, stab: P.stab, stabOn: P.stabOk && CONFIG.stab.enabled, dyH: [],
       det: (() => { const d = new MotionDetector(P.geo); d.seed(P.gcal); return d; })(), trk: new Tracker(S.calibs.slice(), P.ah, null, P.geo), p: [0, 0, 0], prevP: null, gate: new StabGate(), stabState: P.stabOk && CONFIG.stab.enabled ? 'init' : 'off',
       good: 0, bad: 0, ghosts: [], lastT: null, tNow: 0, timeMode: null, fpsLog: [], paused: false, ended: false, geoBad: false, hudT: 0,
-      procEma: 0, refEma: 0, refineOff: false, nProc: 0, lastLow: 0, t0wall: performance.now(), shiftPx: 0, stabInfo: null, nBlobs: 0, lastRes: null, cnt: newCnt(), log: [], missT: -9, vdSeen: -1
+      procEma: 0, refEma: 0, refineOff: false, anIv: 1000 / CONFIG.perf.anFps, hi: false, srcT: null, srcDt: 0, alT: 0, nProc: 0, lastLow: 0, t0wall: performance.now(), shiftPx: 0, stabInfo: null, nBlobs: 0, lastRes: null, cnt: newCnt(), log: [], missT: -9, vdSeen: -1
     });
     R.rvfc = 0; R.raf = 0;
     R.trk.onEv = jl;
@@ -2913,6 +2916,15 @@ function adaptFileRate(now) {
     if (!R.rateToast) { R.rateToast = true; toast('Телефон не успевает разбирать каждый кадр: замедляю видео до ×' + String(r).replace('.', ',') + ' (время берётся из меток кадров — скорости машин не искажаются).', 6000); }
   }
 }
+// AUTO LOAD: обработка должна занимать меньше интервала анализа; перегруз → реже анализ, реже детектор и уточнение (трекер не отключается)
+function autoLoad(now) {
+  const pc = CONFIG.perf;
+  if (!pc.auto || R.nProc < 10 || now - R.alT < 600) return;
+  R.alT = now;
+  const busy = R.procEma / R.anIv;
+  if (busy > pc.hiBusy) { R.hi = true; R.anIv = Math.min(R.anIv * 1.15, 1000 / pc.minFps); }
+  else if (busy < pc.loBusy) { R.hi = false; R.anIv = Math.max(R.anIv / 1.1, 1000 / pc.maxFps); }
+}
 function fpsNow() {
   const L = R.fpsLog || [], n = L.length;
   if (n < 3) return { an: 0, src: 0 };
@@ -2930,6 +2942,9 @@ function processFrame(now, md) {
   if (!vw || !vh || video.readyState < 2) return;
   const t = frameTime(now, md);
   if (R.lastT !== null && t <= R.lastT + 1e-6) return;
+  const dS = R.srcT != null ? t - R.srcT : 0; R.srcT = t;
+  if (dS > 0 && dS < 0.25) R.srcDt = R.srcDt ? 0.9 * R.srcDt + 0.1 * dS : dS;
+  if (R.lastT !== null && t - R.lastT < R.anIv / 1000 - 0.5 * (R.srcDt || 0.0167)) return;   // лишний кадр: тяжёлый анализ пропускаем
   logFps(now, md);
   const F = S.frozen;
   if (Math.abs((vw / vh) / (F.w / F.h) - 1) > 0.03) {
@@ -2982,16 +2997,19 @@ function processFrame(now, md) {
   for (const tr of R.trk.tracks) if (tr.shown && !tr.snapTaken && tr.pts.length >= 8) { tr.snapTaken = true; captureSnap(tr); }
   tmAdd('trk', performance.now() - tD);
   R.nProc++;
-  R.procEma = R.procEma ? 0.9 * R.procEma + 0.1 * (performance.now() - tW0) : (performance.now() - tW0);
   updateHud(); drawRun();
+  const dW = performance.now() - tW0; R.procEma = R.procEma ? 0.9 * R.procEma + 0.1 * dW : dW;
+  autoLoad(tW0 + dW);
 }
 
 /* Уточнение нижней кромки по кадру исходного разрешения */
 function refineBlobs(blobs, tW0) {
   const rc = CONFIG.refine;
   if (!rc.enabled || R.refineOff || !blobs.length) return;
-  const cand = blobs.filter(b => b.usable).sort((a, b) => b.area - a.area).slice(0, rc.maxPerFrame);
+  if (R.hi && (R.nProc & 1)) return;   // перегруз: уточняем через кадр
+  const cand = blobs.filter(b => b.usable).sort((a, b) => b.area - a.area).slice(0, R.hi ? 1 : rc.maxPerFrame);
   for (const b of cand) {
+    if (performance.now() - tW0 > 0.6 * R.anIv) return;   // кадр уже занял большую часть интервала — приоритет у трека
     const t0 = performance.now();
     try { refineBlob(b, rc); } catch (e) { R.refineOff = true; return; }
     R.refEma = R.refEma ? 0.9 * R.refEma + 0.1 * (performance.now() - t0) : (performance.now() - t0);
@@ -3109,7 +3127,7 @@ function updateHud(force) {
   R.hudT = now;
   adaptFileRate(now);
   const f = fpsNow();
-  const low = f.an > 0 && (S.srcKind === 'file' ? f.src > 0 && f.an / f.src < 0.9 : f.an < CONFIG.ui.fpsWarn) && R.running && !R.paused;
+  const low = f.an > 0 && f.an < 0.8 * Math.min(1000 / R.anIv, f.src || 99) && R.running && !R.paused;
   const ch = $('chFps');
   const pr = S.srcKind === 'file' && video.playbackRate < 0.995 ? ' ×' + String(video.playbackRate).replace('.', ',') : '';
   ch.firstElementChild.textContent = f.src ? f.src.toFixed(0) + '/' + f.an.toFixed(0) + pr : '—';
