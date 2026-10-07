@@ -334,7 +334,7 @@ const CONFIG = {
     dupOverlap: 0.5,           // новый блоб над существующим треком с таким перекрытием по x — осколок, не машина
     // --- «не уверен — не меряй» ---
     minShowPts: 4, minShowWinSec: 0.6, minShowPath: 15, maxStepKmh: 3,   // число показывается, если точек не меньше и окно не короче (с)
-    earlyWinSec: 0.35, earlyStable: 2, earlyPath: 8, earlyErr: 0.07,   // live-число с «~» (раньше): окно, с; оценок подряд; путь, м. Итоговый проезд остаётся строгим
+    earlyWinSec: 0.35, earlyStable: 2, earlyPath: 8,   // live-число с «~» (раньше): окно, с; оценок подряд; путь, м. Итоговый проезд остаётся строгим
     showStable: 3, stableKmh: 12,        // …и последние N оценок подряд отличаются не больше чем на это, км/ч
     jumpKmh: 20, maxJumps: 3,            // после показа скачок больше этого — выброс (игнор); N скачков подряд — замер заново
     liveWinSec: 0.5, gateAgree: 0.08, highKmh: 130,  // окно быстрого LIVE, с; согласие A и B (доля), выше highKmh нужно подтверждение воротами
@@ -976,12 +976,14 @@ function vdTick(video, t, p, pivot, aw, ah, stab) {   // p — текущая о
 
 const vdGate = () => CONFIG.stab.detect.gate && VD.st === 'ready' && !!(VD.det || VD.w);
 function vdPt(x, y) { if (!VD.cal) return false; for (const r of VD.cal) if (x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1) return true; return false; }
-function vdHit(b, t) {   // блоб подтверждён рамкой детектора (рамки с временем VD.t, в координатах калибровки); рамка старше кадра на 1–2 кадра → расширяем по вертикали на сдвиг машины
-  if (!VD.cal) return false;
+function vdHit(b, t) {   // номер рамки детектора (1…) с лучшим перекрытием, иначе 0; рамка старше кадра на 1–2 кадра → расширяем по вертикали на сдвиг машины
+  if (!VD.cal) return 0;
   const bw = b.x1 + 1 - b.x0, bh = b.y1 + 1 - b.y0, pv = clamp(t == null ? 0 : t - VD.t, 0, 0.3) * 0.3 * (R.ah || 0);
-  for (const r of VD.cal) { const ox = Math.min(b.x1 + 1, r.x1) - Math.max(b.x0, r.x0), oy = Math.min(b.y1 + 1, r.y1 + pv) - Math.max(b.y0, r.y0 - pv); if (ox > 0 && oy > 0 && ox * oy >= 0.3 * Math.min(bw * bh, (r.x1 - r.x0) * (r.y1 - r.y0 + 2 * pv))) return true; }
-  return false;
+  let best = 0, bs = 0;
+  VD.cal.forEach((r, k) => { const ox = Math.min(b.x1 + 1, r.x1) - Math.max(b.x0, r.x0), oy = Math.min(b.y1 + 1, r.y1 + pv) - Math.max(b.y0, r.y0 - pv); if (ox > 0 && oy > 0 && ox * oy >= 0.3 * Math.min(bw * bh, (r.x1 - r.x0) * (r.y1 - r.y0 + 2 * pv)) && ox * oy > bs) { bs = ox * oy; best = k + 1; } });
+  return best;
 }
+
 /* ---------- Автомат стабилизации: init → ok ⇄ coast → lost ---------- */
 // coast — оценка не прошла: кадры пропускаются, но треки и метки живут до coastSec (раньше сбрасывались после 4 кадров);
 // возвращается measure (обрабатывать ли кадр) и flush (завершить треки — потеря затянулась)
@@ -1491,7 +1493,7 @@ class Tracker {
         if (tr.dead || tr.lane !== b.lane || !tr.blob) continue;
         const a = tr.blob, ov = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0) + 1;
         const gapY = Math.max(0, Math.max(a.y0, b.y0) - Math.min(a.y1, b.y1));
-        if (ov >= tc.dupOverlap * Math.min(a.x1 - a.x0 + 1, b.x1 - b.x0 + 1) && ((gapY <= Math.max(a.y1 - a.y0 + 1, b.y1 - b.y0 + 1) && b.area < 0.6 * a.area) || (gapY <= 0.3 * Math.max(a.y1 - a.y0 + 1, b.y1 - b.y0 + 1) && b.yEdge < a.yEdge))) { frag = true; break; }   // крупный блоб с просветом выше — следующая машина колонны, а не осколок
+        if (ov >= tc.dupOverlap * Math.min(a.x1 - a.x0 + 1, b.x1 - b.x0 + 1) && gapY <= Math.max(a.y1 - a.y0 + 1, b.y1 - b.y0 + 1) && (b.yEdge < a.yEdge || b.area < 0.6 * a.area) && !(a.detK > 0 && b.detK > 0 && a.detT === b.detT && a.detK !== b.detK)) { frag = true; break; }   // две разные рамки детектора — две машины, а не осколок
       }
       if (frag) continue;
       if (this._revive(b, t, T)) continue;
@@ -1545,9 +1547,9 @@ class Tracker {
       if (a.dead || b.dead || !a.blob || !b.blob || Math.abs(a.lane - b.lane) > 1) continue;
       const A = a.blob, B = b.blob, ov = Math.min(A.x1, B.x1) - Math.max(A.x0, B.x0) + 1;
       const gapY = Math.max(0, Math.max(A.y0, B.y0) - Math.min(A.y1, B.y1));
-      const close = Math.abs(a.x - b.x) <= 0.6 * Math.max(a.bw, b.bw) && Math.abs(a.y - b.y) <= Math.min(tc.dupGapPx, Math.max(3, 0.7 * Math.min(A.y1 - A.y0 + 1, B.y1 - B.y0 + 1)));   // у горизонта машины близки в пикселях — допуск по высоте блоба
+      const close = Math.abs(a.x - b.x) <= 0.6 * Math.max(a.bw, b.bw) && Math.abs(a.y - b.y) <= tc.dupGapPx;
       const touch = ov >= tc.dupOverlap * Math.min(A.x1 - A.x0 + 1, B.x1 - B.x0 + 1) && gapY <= 3;
-      if (!close && !touch) continue;
+      if ((!close && !touch) || (A.detK > 0 && B.detK > 0 && A.detT === B.detT && A.detK !== B.detK)) continue;   // две разные рамки детектора — две машины, не дубль
       const lo = q(a) >= q(b) ? b : a; lo.dead = true; lo.dup = true; lo.why = 'dup';
     }
   }
@@ -1631,8 +1633,8 @@ class Tracker {
     tr.stable++; tr.jumps = 0;
     const nMin = tr.blob && tr.blob.det && vdGate() ? Math.min(3, tc.minShowPts) : tc.minShowPts;   // Т1.3: рамка детектора подтверждает машину — хватает 3 точек
     const mv = tr.moved && n >= nMin, strictOk = mv && tr.stable >= tc.showStable && tr.win >= tc.minShowWinSec && tr.path >= Math.max(tc.minTravelM, tc.minShowPath);
-    const bl = tr.blob, shapeOk = !bl || !vdGate() || bl.det || (bl.area >= 0.4 * bl.bw * (bl.y1 - bl.y0 + 1) && bl.bw >= 0.5 * bl.laneW && Math.max(bl.bw / (bl.y1 - bl.y0 + 1), (bl.y1 - bl.y0 + 1) / bl.bw) <= 3);   // как pendOk: рамка детектора либо размер и форма
-    const earlyOk = !strictOk && mv && shapeOk && tr.stable >= tc.earlyStable && tr.win >= tc.earlyWinSec && tr.path >= Math.max(tc.minTravelM, tc.earlyPath) && f.rel <= tc.earlyErr;   // live-число раньше, с «~»
+    const bl = tr.blob, shapeOk = !bl || !vdGate() || bl.det || (bl.area >= 0.35 * bl.bw * (bl.y1 - bl.y0 + 1) && bl.bw >= 0.5 * bl.laneW);   // как pendOk: рамка детектора либо размер и форма
+    const earlyOk = !strictOk && mv && shapeOk && tr.stable >= tc.earlyStable && tr.win >= tc.earlyWinSec && tr.path >= Math.max(tc.minTravelM, tc.earlyPath);   // live-число раньше, с «~»
     if (strictOk) tr.strict = true;
     tr.blk = !mv ? 'pts_move' : !shapeOk ? 'shape' : tr.stable < tc.earlyStable ? 'stable' : tr.win < tc.earlyWinSec ? 'win' : tr.path < Math.max(tc.minTravelM, tc.earlyPath) ? 'path' : '';   // что мешало показу — в журнал
     const okShow = strictOk || earlyOk;
@@ -2905,7 +2907,7 @@ function countMissed(t) {   // машина детектора в зоне за�
 function pendOk(b) {   // «…» только для настоящей машины: рамка детектора либо размер и форма (заполненность ≥ 0,35, ширина ≥ ½ полосы, не «нитка»)
   if (!vdGate() || b.det) return true;
   const w = b.x1 - b.x0 + 1, h = b.y1 - b.y0 + 1;
-  return b.area / (w * h) >= 0.4 && w >= 0.5 * laneWidthAt(R.geo, b.yEdge, b.lane) && Math.max(h / w, w / h) <= 3;
+  return b.area / (w * h) >= 0.35 && w >= 0.5 * laneWidthAt(R.geo, b.yEdge, b.lane) && Math.max(h / w, w / h) <= 4;
 }
 function exportLog() {
   if (!R.log || !R.log.length) { toast('Журнал пуст.'); return; }
@@ -3150,7 +3152,7 @@ function processFrame(now, md) {
   if (R.det.didReset) { flushTracks(); toast('Сцена сильно изменилась — фон пересоздан.'); }
   if (ready) {
     blobs = R.det.extract();
-    if (vdGate()) for (const b of blobs) b.det = vdHit(b, t);
+    if (vdGate()) for (const b of blobs) { const k = vdHit(b, t); b.det = k > 0; b.detK = k; b.detT = VD.t; }
     const rj = R.det.rej; R.det.rej = null;   // Т5: блобы дальней трети, отброшенные фильтрами размера и формы
     if (rj) for (const s of rj) if (R.cnt.drop < CONFIG.blob.dropLog) { R.cnt.drop++; R.log.push([t.toFixed(2), 'drop', '', '', '', '', s]); }
     const tR0 = performance.now(); refineBlobs(blobs, tW0); tRf = performance.now() - tR0;
@@ -3236,7 +3238,8 @@ function drawRun() {
     R.ghosts = R.ghosts.filter(gh => gh.until > R.tNow && gh.until - R.tNow < 5);
     const list = [];
     for (const gh of R.ghosts) list.push({ cx: gh.cx, ce: gh.ce, y0: gh.y, kmh: gh.kmh, dir: gh.dir, lane: gh.lane, id: gh.id, ord: gh.ce, tilde: gh.tilde, fin: true });
-    if (R.trk) for (const tr of R.trk.tracks) {
+    const kept = [], near = (a, b) => { const ov = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0) + 1, gy = Math.max(0, Math.max(a.y0, b.y0) - Math.min(a.y1, b.y1)); return ov >= 0.5 * Math.min(a.x1 - a.x0 + 1, b.x1 - b.x0 + 1) && gy <= a.y1 - a.y0 + 1 && !(a.detK > 0 && b.detK > 0 && a.detT === b.detT && a.detK !== b.detK); };   // «…» не над и не рядом с уже размеченной машиной, если детектор не видит две разные
+    if (R.trk) for (const tr of R.trk.tracks.slice().sort((p, q) => (q.shown - p.shown) || (q.pts.length - p.pts.length))) {
       const bl = tr.blob; if (!bl) continue;
       const age = R.tNow - (tr.pts.length ? tr.pts[0].t : tr.t0);
       let show = false, pending = false;
@@ -3244,6 +3247,8 @@ function drawRun() {
       if (tr.shown && tr.kmh != null && tr.kmh >= minK) show = true;
       else if (!tr.shown && tr.moved && tr.frames >= tc.confirmFrames && (bl.touching ? tr.pts.length > 0 : age <= tc.pendingMaxSec) && bl.area >= CONFIG.blob.minAreaPx && pendOk(bl)) pending = true;
       if (!show && !pending) continue;
+      if (pending && kept.some(k => k.lane === tr.lane && near(k.bl, bl))) continue;
+      kept.push({ lane: tr.lane, bl });
       tr.drawn = true;
       list.push({ cx: bl.xc, ce: bl.yEdge, y0: bl.y0, kmh: pending ? null : tr.kmh, dir: pending ? 0 : tr.dir, lane: tr.lane, id: tr.id, ord: bl.yEdge, tilde: !pending && tr.tilde, dbg: S.debug && tr.err != null ? 'σ ' + fmt(100 * tr.err, 1) + '% · ' + fmt(tr.win, 2) + ' с · ' + tr.pts.length + ' т · ' + fmt(tr.path || 0) + ' м' : '' });
     }
@@ -3333,4 +3338,4 @@ vdLoad();   // детектор машин грузится в фоне; пок�
 
 </script>
 </body>
-</html>
+  </html>
