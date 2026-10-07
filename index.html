@@ -1307,7 +1307,7 @@ class Tracker {
     this.tracks = []; this.nextId = 1; this.lastT = null; this.passes = []; this.ghosts = []; this.limbo = []; this.lastDead = []; this.dirLane = []; this.onEv = null;
   }
 
-  reset() { this.tracks = []; this.lastT = null; this.limbo = []; }
+  reset() { this.tracks = []; this.lastT = null; this.limbo = []; this.dirLane = []; }
 
   // blobs уже содержат yEdge (кромка в калибровочных координатах, граница строк); t — время кадра, с
   update(blobs, t) {
@@ -2873,6 +2873,7 @@ async function startRun() {
     video.style.visibility = 'visible';
     resizeStage(); setViewFrame(S.frozen.w, S.frozen.h);
     if (S.srcKind === 'file') { video.playbackRate = 1; await seekTo(S.fromStart ? 0 : (S.frozen.t || 0)); }
+    if (VD.det && VD.st === 'ready' && video.videoWidth) vdRun(video, P.aw / video.videoWidth, P.ah / video.videoHeight);   // прогрев детектора машин до начала замера: первый вызов (компиляция шейдеров) тянется сотни мс и рвал бы треки в первых секундах
     R.running = true;
     renderDrawer(); updateHud(true); updateLevelVisibility();
     wakeOn();
@@ -2911,8 +2912,16 @@ function togglePause() {
 }
 async function restartFile() {
   if (S.srcKind !== 'file' || !R.running) return;
-  flushTracks(); R.det.reset(); R.lastT = null; R.ended = false; R.paused = false; R.ghosts = [];
-  if (R.gate) { R.gate.reset(); R.stabState = R.stabOn ? 'init' : 'off'; }
+  flushTracks();
+  // ↺ = чистый старт, как первый запуск: из прошлого прохода не переносится ничего (фон детектора, трекер и выученное направление полос, счётчики, список проездов, подстройка нагрузки)
+  const P = prep; clearPasses();
+  const d = new MotionDetector(P.geo); d.seed(P.gcal);
+  Object.assign(R, {
+    det: d, trk: new Tracker(S.calibs.slice(), P.ah, null, P.geo), p: [0, 0, 0], prevP: null, gate: new StabGate(), stabState: P.stabOk && CONFIG.stab.enabled ? 'init' : 'off',
+    dyH: [], good: 0, bad: 0, ghosts: [], lastT: null, tNow: 0, timeMode: null, fpsLog: [], paused: false, ended: false, geoBad: false, hudT: 0,
+    procEma: 0, refEma: 0, refineOff: false, anIv: 1000 / CONFIG.perf.anFps, hi: false, srcT: null, srcDt: 0, alT: 0, nProc: 0, lastLow: 0, t0wall: performance.now(), shiftPx: 0, stabInfo: null, nBlobs: 0, lastRes: null, cnt: newCnt(), log: [], missT: -9, vdSeen: -1
+  });
+  R.trk.onEv = jl; VD.cal = null; VD.t = 0;
   $('btnPause').textContent = '⏸ Пауза'; setMsg('');
   await seekTo(0);
   try { await video.play(); } catch (_) {}
