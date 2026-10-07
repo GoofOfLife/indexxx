@@ -268,7 +268,6 @@ const CONFIG = {
       score: 0.35,             // мин. уверенность детектора
       pad: 0.15,               // запас вокруг рамки машины, доля её размера
       everyMs: 170, idleMs: 350, fastMs: 100, share: 0.3,   // детектор, мс: при движении/треках (≈6/с); без движения (≈3/с); вне очереди при неподтверждённом блобе; доля времени, которую он может занимать
-      worker: true, bmpMax: 640, warmN: 3,   // воркер с EfficientDet: кадр ImageBitmap не крупнее bmpMax px; warmN — холостых прогонов после создания
       holdSec: 0.5             // сколько рамки машин держатся без нового запуска, с
     }
   },
@@ -300,8 +299,7 @@ const CONFIG = {
     minAreaMaxPx: 900,         // потолок этого порога, px: у близких машин (широкая полоса) квадрат не должен выбрасывать неполно найденные блобы
     minHeightLane: 0.12,       // мин. высота блоба, доля ширины полосы
     minFill: 0.25,             // мин. заполненность рамки блоба (площадь / площадь рамки)
-    rowFar: { area: 0.4, width: 0.7, height: 0.6, fill: 0.7 }, rowFull: 0.5,   // пороги зависят от строки: у горизонта × эти доли, к половине глубины зоны — × 1
-    dropLog: 300,              // сколько отброшенных блобов дальней трети писать в журнал
+    softMinLane: 0.4,          // кромка, упёршаяся в границу зоны, годится для точки (σ×1,5), если видна не меньше этой доли ширины полосы
     mergeGapPx: 6,             // слияние близких блобов одной полосы, px
     ownerFrac: 0.03,           // «хозяин» нижней кромки среди склеенных блобов соседних полос: площадь не меньше этой доли от крупнейшего
     ownerTol: 2,               // допуск по строке при выборе «хозяина» нижней кромки, px
@@ -311,7 +309,7 @@ const CONFIG = {
   },
   // ---------- Трекинг и скорость ----------
   track: {
-    gateMinX: 14, gateBaseY: 10, gateNewY: 26, // допуски привязки блоба к треку, px анализа
+    gateMinX: 14, gateBaseY: 10, gateNewY: 26, gateVmaxKmh: 160, // допуски привязки блоба к треку, px анализа; gateVmaxKmh — первая привязка (трек без скорости) идёт окном в метрах: за кадр машина проходит не больше этого (на 13 кадр/с у низа кадра сдвиг 60–140 px, фикс. 26 px не хватало)
     gateVy: 0.45,              // доля ожидаемого сдвига по вертикали, добавляемая к допуску
     gateVx: 0.5,               // то же по горизонтали
     gateMiss: 3,               // прибавка к допуску по x за каждый пропущенный кадр, px
@@ -330,11 +328,10 @@ const CONFIG = {
     minSpeedKmh: 8,            // медленнее — не машина
     pendingMaxSec: 2.5,        // сколько показывать «…» после появления нижней кромки (пока кромка у края кадра — без ограничения)
     confirmFrames: 3,          // кадров с блобом до показа метки
-    finalMinPts: 8, finalMaxRmsM: 0.6, // условия итогового проезда
+    finalMinPts: 8, finalMaxRmsM: 0.6, unshownMaxRmsM: 0.4, unshownMinPathM: 12, // условия итогового проезда; unshown* — строже: для трека, не успевшего показать число (быстрая машина, короткая зона)
     dupOverlap: 0.5,           // новый блоб над существующим треком с таким перекрытием по x — осколок, не машина
     // --- «не уверен — не меряй» ---
-    minShowPts: 4, minShowWinSec: 0.6, minShowPath: 15, maxStepKmh: 3,   // число показывается, если точек не меньше и окно не короче (с)
-    earlyWinSec: 0.35, earlyStable: 2, earlyPath: 8,   // live-число с «~» (раньше): окно, с; оценок подряд; путь, м. Итоговый проезд остаётся строгим
+    minShowPts: 4, minShowWinSec: 0.35, minShowPath: 9, maxStepKmh: 3,   // число показывается, если точек не меньше и окно не короче (с)
     showStable: 3, stableKmh: 12,        // …и последние N оценок подряд отличаются не больше чем на это, км/ч
     jumpKmh: 20, maxJumps: 3,            // после показа скачок больше этого — выброс (игнор); N скачков подряд — замер заново
     liveWinSec: 0.5, gateAgree: 0.08, highKmh: 130,  // окно быстрого LIVE, с; согласие A и B (доля), выше highKmh нужно подтверждение воротами
@@ -356,7 +353,7 @@ const CONFIG = {
   },
   // ---------- Видеофайл ----------
   file: { adaptiveRate: false, minRate: 0.2, coverageMin: 0.8 }, // замедление воспроизведения выключено: пропуск кадров вместо замедления
-  perf: { auto: true, minFps: 20, maxFps: 30, hiBusy: 0.7, loBusy: 0.45, everyMs: 600, hiHold: 2, loHold: 4 }, // цель анализа = min(maxFps, fps источника); перегруз: L1 уточнение → L2 детектор → L3 частота (не ниже minFps); возврат с гистерезисом
+  perf: { auto: true, anFps: 20, minFps: 12, maxFps: 30, hiBusy: 0.7, loBusy: 0.45 }, // анализ ≈20 кадров/с независимо от камеры; AUTO LOAD двигает его в 12–30
   // ---------- Лимит, цвета ----------
   limit: { default: 50, presets: [20, 30, 40, 50, 60, 70, 80, 90], yellowOver: 10 },
   // ---------- Интерфейс ----------
@@ -806,76 +803,11 @@ class Stabilizer {
 
 /* ---------- Детектор машин на устройстве (MediaPipe Object Detector, EfficientDet-Lite0) ---------- */
 // Блоки под машинами — плохая опора: машина едет или уедет. Рамки машин: на кадре калибровки — маска до выбора блоков; на видео — исключение блоков на лету.
-const VD = { det: null, st: 'idle', cal: null, t: 0, ms: 0, last: -1e9, mode: 'main', w: null, rq: null, id: 0, lag: 0, ts: 0, warm: '', wErr: 0, calBoxes: null, once: null, wres: null, noRs: 0 };   // st: idle | loading | ready | fail; mode: main | worker
-const vdTs = () => (VD.ts = Math.max(VD.ts + 1, performance.now()));   // метки времени MediaPipe строго растут
-const vdSrcs = () => { const c = CONFIG.stab.detect, u = p => new URL(p, location.href).href; return [{ lib: u(c.lib), wasm: u(c.wasm), model: u(c.model) }, { lib: c.cdn + '/vision_bundle.mjs', wasm: c.cdn + '/wasm', model: c.modelCdn }]; };
-function vdWorkerSrc() {   // тело воркера (уходит в Blob): свой MediaPipe и модель, только GPU-делегат; кадр — ImageBitmap (transfer)
-  let det = null, ts = 0;
-  const nts = () => (ts = Math.max(ts + 1, performance.now()));
-  self.onmessage = async e => {
-    const m = e.data;
-    try {
-      if (m.type === 'init') {
-        let err = '';
-        for (const s of m.srcs) {
-          let mp, vis;
-          try { mp = await import(s.lib); vis = await mp.FilesetResolver.forVisionTasks(s.wasm); } catch (x) { err += 'load: ' + x + '; '; continue; }
-          try { det = await mp.ObjectDetector.createFromOptions(vis, { baseOptions: { modelAssetPath: s.model, delegate: 'GPU' }, runningMode: 'VIDEO', scoreThreshold: m.score, categoryAllowlist: m.classes, maxResults: 12 }); } catch (x) { err += 'gpu: ' + x + '; '; }
-          break;
-        }
-        self.postMessage(det ? { type: 'ready' } : { type: 'fail', err });
-      } else if (m.type === 'warm') {
-        const cv = new OffscreenCanvas(m.w, m.h); cv.getContext('2d');
-        for (let i = 0; i < m.n; i++) det.detectForVideo(cv, nts());
-        self.postMessage({ type: 'warmed' });
-      } else if (m.type === 'detect') {
-        const t0 = performance.now(); let r;
-        try { r = det.detectForVideo(m.bmp, nts()); } finally { m.bmp.close(); }
-        self.postMessage({ type: 'res', id: m.id, w: m.w, h: m.h, ms: performance.now() - t0, boxes: (r.detections || []).filter(d => d.boundingBox).map(d => { const b = d.boundingBox; return [b.originX, b.originY, b.width, b.height]; }) });
-      }
-    } catch (x) { self.postMessage({ type: 'err', id: m.id, err: String(x) }); }
-  };
-}
-function vdWorkerStart() {   // false — воркера/ImageBitmap/OffscreenCanvas нет или GPU-делегат не взялся → остаётся основной поток
+const VD = { det: null, st: 'idle', cal: null, t: 0, ms: 0, last: -1e9 };   // st: idle | loading | ready | fail
+async function vdLoad() {
   const c = CONFIG.stab.detect;
-  return new Promise(resolve => {
-    let w = null, url = null, done = false, tm = 0;
-    const end = ok => { if (done) return; done = true; clearTimeout(tm); if (url) URL.revokeObjectURL(url); if (ok) { VD.w = w; VD.mode = 'worker'; } else if (w) { try { w.terminate(); } catch (_) {} } resolve(ok); };
-    tm = setTimeout(() => end(false), 30000);
-    try {
-      if (typeof Worker === 'undefined' || typeof createImageBitmap !== 'function' || typeof OffscreenCanvas === 'undefined') return end(false);
-      url = URL.createObjectURL(new Blob(['(' + vdWorkerSrc.toString() + ')()'], { type: 'text/javascript' }));
-      w = new Worker(url);
-      w.onerror = e => { if (!done) end(false); else vdWorkerFail(e && e.message); };
-      w.onmessage = e => vdOnMsg(e.data, end);
-      w.postMessage({ type: 'init', srcs: vdSrcs(), score: c.score, classes: c.classes });
-    } catch (_) { end(false); }
-  });
-}
-function vdOnMsg(m, end) {
-  if (m.type === 'ready') end(true);
-  else if (m.type === 'fail') { console.warn('Воркер детектора не поднялся:', m.err); end(false); }
-  else if (m.type === 'warmed') { if (VD.wres) VD.wres(); }
-  else if (m.type === 'res') {
-    if (VD.once && VD.once.id === m.id) { const o = VD.once; VD.once = null; o.res(m); return; }
-    const rq = VD.rq;
-    if (rq && rq.id === m.id) { VD.rq = null; VD.wErr = 0; if (rq.stab === R.stab) vdApply(m, rq); }
-  } else if (m.type === 'err') {
-    console.warn('Воркер детектора:', m.err);
-    if (VD.wres) VD.wres();
-    if (VD.once && VD.once.id === m.id) { VD.once.res(null); VD.once = null; }
-    else { VD.rq = null; if (++VD.wErr >= 3) vdWorkerFail(m.err); }
-  }
-}
-function vdWorkerFail(why) {   // воркер сломался на ходу — возвращаемся на основной поток
-  console.warn('Воркер детектора отключён:', why);
-  try { VD.w.terminate(); } catch (_) {}
-  VD.w = null; VD.rq = null; VD.cal = null; VD.st = 'loading'; VD.mode = 'main'; VD.warm = '';
-  if (R.stab) R.stab.setExclusions([]);
-  vdLoadMain().then(async ok => { if (ok) { await vdWarm(640, 360); VD.st = 'ready'; } });
-}
-async function vdLoadMain() {   // детектор на основном потоке (прежний вариант: GPU, затем CPU; локальные файлы, затем CDN)
-  const c = CONFIG.stab.detect;
+  if (!c.enabled || VD.st !== 'idle') return;
+  VD.st = 'loading';
   const make = async (lib, wasm, model) => {
     const mp = await import(lib), vis = await mp.FilesetResolver.forVisionTasks(wasm);
     const mk = delegate => mp.ObjectDetector.createFromOptions(vis, { baseOptions: { modelAssetPath: model, delegate }, runningMode: 'VIDEO', scoreThreshold: c.score, categoryAllowlist: c.classes, maxResults: 12 });
@@ -884,55 +816,15 @@ async function vdLoadMain() {   // детектор на основном пот
   try { VD.det = await make(c.lib, c.wasm, c.model); }
   catch (e1) {
     try { VD.det = await make(c.cdn + '/vision_bundle.mjs', c.cdn + '/wasm', c.modelCdn); }
-    catch (e2) { VD.st = 'fail'; console.warn('Детектор машин недоступен — стабилизация без него.', e1, e2); return false; }
+    catch (e2) { VD.st = 'fail'; console.warn('Детектор машин недоступен — стабилизация без него.', e1, e2); return; }
   }
-  VD.mode = 'main';
-  return true;
-}
-async function vdLoad() {
-  const c = CONFIG.stab.detect;
-  if (!c.enabled || VD.st !== 'idle') return;
-  VD.st = 'loading';
-  if (!(c.worker && await vdWorkerStart()) && !await vdLoadMain()) return;   // сначала воркер; не вышло — основной поток
-  await vdWarm(640, 360);   // Т6: холостые прогоны до готовности (для размера кадра запуска прогрев повторяется в startRun)
   VD.st = 'ready';
 }
 async function vdWait(ms) { const t0 = performance.now(); while (VD.st === 'loading' && performance.now() - t0 < ms) await wait(50); }
-async function vdWarm(w, h) {   // 2–3 холостых detectForVideo на пустом холсте такого же размера, как рабочие кадры
-  const c = CONFIG.stab.detect, key = VD.mode + w + 'x' + h;
-  if (!(w > 0 && h > 0) || VD.warm === key || !(VD.det || VD.w)) return;
-  const t0 = performance.now();
-  if (VD.mode === 'worker') await new Promise(r => { VD.wres = r; VD.w.postMessage({ type: 'warm', w, h, n: c.warmN }); setTimeout(r, 20000); });
-  else { const cv = document.createElement('canvas'); cv.width = w; cv.height = h; cv.getContext('2d'); try { for (let i = 0; i < c.warmN; i++) VD.det.detectForVideo(cv, vdTs()); } catch (_) {} }
-  VD.warm = key; console.log('[VD] прогрев ' + key + ': ' + (performance.now() - t0).toFixed(0) + ' мс');
-}
-const vdBmpSize = (vw, vh) => { const m = CONFIG.stab.detect.bmpMax, k = m > 0 ? Math.min(1, m / Math.max(vw, vh)) : 1; return [Math.round(vw * k), Math.round(vh * k)]; };
-function vdBoxes(m) {   // рамки воркера → доли кадра [x0, y0, x1, y1] с запасом pad
-  const pad = CONFIG.stab.detect.pad;
-  return m.boxes.map(([x, y, w, h]) => [(x - w * pad) / m.w, (y - h * pad) / m.h, (x + w * (1 + pad)) / m.w, (y + h * (1 + pad)) / m.h]);
-}
-function vdSet(bx, p, pivot, t, stab) {   // рамки (координаты анализа кадра t, поза p) → координаты калибровки; VD.t — время кадра, а не прихода ответа
-  VD.cal = bx.map(r => { const q = [warpInv(p, pivot, r.x0, r.y0), warpInv(p, pivot, r.x1, r.y0), warpInv(p, pivot, r.x0, r.y1), warpInv(p, pivot, r.x1, r.y1)]; return { x0: Math.min(...q.map(a => a[0])), x1: Math.max(...q.map(a => a[0])), y0: Math.min(...q.map(a => a[1])), y1: Math.max(...q.map(a => a[1])) }; });
-  VD.t = t; stab.setExclusions(VD.cal);
-}
-function vdApply(m, rq) {   // ответ воркера: поза и время — те, что были при отправке кадра
-  vdSet(vdBoxes(m).map(r => ({ x0: r[0] * rq.aw, y0: r[1] * rq.ah, x1: r[2] * rq.aw, y1: r[3] * rq.ah })), rq.p, rq.pivot, rq.t, rq.stab);
-  VD.ms = 0.8 * VD.ms + 0.2 * m.ms; VD.lag = 0.8 * VD.lag + 0.2 * (performance.now() - rq.wall);
-}
-async function vdCalBoxes(cv) {   // воркер: рамки машин кадра калибровки (доли кадра) для vdMaskCars
-  VD.calBoxes = null;
-  if (VD.mode !== 'worker' || !VD.w) return;
-  try {
-    const [bw, bh] = vdBmpSize(cv.width, cv.height), bmp = await createImageBitmap(cv, { resizeWidth: bw, resizeHeight: bh }), id = ++VD.id;
-    const m = await new Promise(res => { VD.once = { id, res }; VD.w.postMessage({ type: 'detect', id, bmp, w: bw, h: bh }, [bmp]); setTimeout(() => res(null), 8000); });
-    VD.once = null;
-    if (m) VD.calBoxes = vdBoxes(m);
-  } catch (_) {}
-}
-function vdRun(src, sx, sy) {   // основной поток: src — video или canvas; рамки машин в координатах анализа (с запасом pad)
+function vdRun(src, sx, sy) {   // src — video или canvas; рамки машин в координатах анализа (с запасом pad)
   const c = CONFIG.stab.detect, t0 = performance.now(), out = [];
   let res;
-  try { res = VD.det.detectForVideo(src, vdTs()); } catch (e) { VD.det = null; VD.st = 'fail'; return null; }
+  try { res = VD.det.detectForVideo(src, t0); } catch (e) { VD.det = null; VD.st = 'fail'; return null; }
   for (const d of res.detections || []) {
     const b = d.boundingBox; if (!b) continue;
     const px = b.width * c.pad, py = b.height * c.pad;
@@ -942,9 +834,8 @@ function vdRun(src, sx, sy) {   // основной поток: src — video и
   return out;
 }
 function vdMaskCars(cv, aw, ah, stat) {   // копия маски «статичных» пикселей с вырезанными машинами кадра калибровки
-  let boxes = null;
-  if (VD.mode === 'worker') boxes = VD.calBoxes && VD.calBoxes.map(r => ({ x0: r[0] * aw, y0: r[1] * ah, x1: r[2] * aw, y1: r[3] * ah }));
-  else if (VD.det) boxes = vdRun(cv, aw / cv.width, ah / cv.height);
+  if (!VD.det) return stat;
+  const boxes = vdRun(cv, aw / cv.width, ah / cv.height);
   if (!boxes || !boxes.length) return stat;
   const m = stat.slice();
   for (const b of boxes) for (let y = Math.max(0, b.y0 | 0); y < Math.min(ah, Math.ceil(b.y1)); y++) for (let x = Math.max(0, b.x0 | 0); x < Math.min(aw, Math.ceil(b.x1)); x++) m[y * aw + x] = 0;
@@ -952,38 +843,28 @@ function vdMaskCars(cv, aw, ah, stat) {   // копия маски «стати�
 }
 function vdTick(video, t, p, pivot, aw, ah, stab) {   // p — текущая оценка позы: рамки переводятся в калибровочные координаты
   const c = CONFIG.stab.detect, now = performance.now();
-  if (VD.st !== 'ready') return;
   const busy = R.nBlobs > 0 || (R.trk && R.trk.tracks.length > 0), fresh = vdGate() && R.blobs && R.blobs.some(b => b.usable && !b.det);
-  const iv = Math.max(fresh ? c.fastMs : busy ? c.everyMs : c.idleMs, VD.mode === 'worker' ? 0 : VD.ms / c.share) * (R.lvl >= 2 ? 2 : 1);   // L2 AUTO LOAD: детектор реже (×2)
-  if (VD.mode === 'worker') {   // в полёте не больше одного запроса: воркер занят — кадр пропускаем
-    if (VD.rq && now - VD.rq.wall > 4000) { VD.rq = null; if (++VD.wErr >= 3) { vdWorkerFail('нет ответа'); return; } }
-    if (!VD.rq && video.videoWidth && now - VD.last >= iv) {
-      VD.last = now;
-      const vw = video.videoWidth, vh = video.videoHeight, [bw, bh] = vdBmpSize(vw, vh), id = ++VD.id, rq = VD.rq = { id, t, p: p.slice(), pivot, aw, ah, stab, wall: now };
-      createImageBitmap(video, bw < vw && !VD.noRs ? { resizeWidth: bw, resizeHeight: bh, resizeQuality: 'low' } : undefined).then(
-        bmp => { if (VD.w && VD.rq === rq) VD.w.postMessage({ type: 'detect', id, bmp, w: bmp.width, h: bmp.height }, [bmp]); else bmp.close(); },
-        () => { if (VD.rq === rq) VD.rq = null; VD.noRs = 1; });
-    } else if (VD.cal && t - VD.t > c.holdSec) { VD.cal = null; stab.setExclusions([]); }
-    return;
-  }
+  const iv = Math.max(fresh ? c.fastMs : busy ? c.everyMs : c.idleMs, VD.ms / c.share) * (R.hi ? 1.5 : 1);
   if (VD.det && video.videoWidth && now - VD.last >= iv) {
     VD.last = now;
     const b = vdRun(video, aw / video.videoWidth, ah / video.videoHeight);
     if (!b) return;
-    vdSet(b, p, pivot, t, stab);
+    VD.cal = b.map(r => {
+      const q = [warpInv(p, pivot, r.x0, r.y0), warpInv(p, pivot, r.x1, r.y0), warpInv(p, pivot, r.x0, r.y1), warpInv(p, pivot, r.x1, r.y1)];
+      return { x0: Math.min(...q.map(a => a[0])), x1: Math.max(...q.map(a => a[0])), y0: Math.min(...q.map(a => a[1])), y1: Math.max(...q.map(a => a[1])) };
+    });
+    VD.t = t; stab.setExclusions(VD.cal);
   } else if (VD.cal && t - VD.t > c.holdSec) { VD.cal = null; stab.setExclusions([]); }
 }
 
-const vdGate = () => CONFIG.stab.detect.gate && VD.st === 'ready' && !!(VD.det || VD.w);
+const vdGate = () => CONFIG.stab.detect.gate && VD.st === 'ready' && !!VD.det;
 function vdPt(x, y) { if (!VD.cal) return false; for (const r of VD.cal) if (x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1) return true; return false; }
-function vdHit(b, t) {   // номер рамки детектора (1…) с лучшим перекрытием, иначе 0; рамка старше кадра на 1–2 кадра → расширяем по вертикали на сдвиг машины
-  if (!VD.cal) return 0;
-  const bw = b.x1 + 1 - b.x0, bh = b.y1 + 1 - b.y0, pv = clamp(t == null ? 0 : t - VD.t, 0, 0.3) * 0.3 * (R.ah || 0);
-  let best = 0, bs = 0;
-  VD.cal.forEach((r, k) => { const ox = Math.min(b.x1 + 1, r.x1) - Math.max(b.x0, r.x0), oy = Math.min(b.y1 + 1, r.y1 + pv) - Math.max(b.y0, r.y0 - pv); if (ox > 0 && oy > 0 && ox * oy >= 0.3 * Math.min(bw * bh, (r.x1 - r.x0) * (r.y1 - r.y0 + 2 * pv)) && ox * oy > bs) { bs = ox * oy; best = k + 1; } });
-  return best;
+function vdHit(b) {   // блоб подтверждён рамкой детектора (рамки хранятся с временем VD.t, в координатах калибровки)
+  if (!VD.cal) return false;
+  const bw = b.x1 + 1 - b.x0, bh = b.y1 + 1 - b.y0;
+  for (const r of VD.cal) { const ox = Math.min(b.x1 + 1, r.x1) - Math.max(b.x0, r.x0), oy = Math.min(b.y1 + 1, r.y1) - Math.max(b.y0, r.y0); if (ox > 0 && oy > 0 && ox * oy >= 0.3 * Math.min(bw * bh, (r.x1 - r.x0) * (r.y1 - r.y0))) return true; }
+  return false;
 }
-
 /* ---------- Автомат стабилизации: init → ok ⇄ coast → lost ---------- */
 // coast — оценка не прошла: кадры пропускаются, но треки и метки живут до coastSec (раньше сбрасывались после 4 кадров);
 // возвращается measure (обрабатывать ли кадр) и flush (завершить треки — потеря затянулась)
@@ -1306,22 +1187,21 @@ class MotionDetector {
       }
     }
     // фильтры размера относительно ширины полосы
-    const out = [], bf = bc.rowFar, hz = Math.max(1, ah - g.y0), third = g.y0 + hz / 3;
-    this.rej = [];
+    const out = [];
     for (const b of blobs) {
       const lw = Math.max(8, laneWidthAt(g, b.yb, b.lane));
       const bw = b.x1 - b.x0 + 1;
       const bh = b.y1 - b.y0 + 1;
-      const q = clamp((b.yb - g.y0) / hz / bc.rowFull, 0, 1), kr = k => k + (1 - k) * q;   // порог зависит от строки: у горизонта мягче (× far), при q = 1 — прежний
-      const why = b.area < Math.max(bc.noisePx, bc.minAreaPx * kr(bf.area)) ? 'minAreaPx' : bw < bc.minWidthLane * kr(bf.width) * lw ? 'minWidthLane' : bh < bc.minHeightLane * kr(bf.height) * lw ? 'minHeightLane' : b.area < Math.min(bc.minAreaLane2 * lw * lw, bc.minAreaMaxPx) ? 'minAreaLane2' : b.area < bc.minFill * kr(bf.fill) * bw * bh ? 'minFill' : '';   // minFill — тонкие «нитки» вдоль разметки
-      if (why) { if (b.yb < third && this.rej.length < 4) this.rej.push(why + ' y=' + b.yb + ' S=' + b.area + ' ' + bw + 'x' + bh + ' lw=' + (lw | 0)); continue; }
+      if (b.area < bc.minAreaPx || bw < bc.minWidthLane * lw || bh < bc.minHeightLane * lw || b.area < Math.min(bc.minAreaLane2 * lw * lw, bc.minAreaMaxPx)) continue;
+      if (b.area < bc.minFill * bw * bh) continue;           // тонкие «нитки» вдоль разметки — не машины
       b.laneW = lw; b.bw = b.x1 - b.x0 + 1; b.xc = (b.x0 + b.x1 + 1) / 2;
       { const yy = clamp(b.yb, 0, ah - 1), N1 = g.N + 1, xl = g.xsAt[yy * N1 + b.lane - 1]; b.u = (b.xc - xl) / Math.max(1, lw); }
       b.yEdge = this.softEdge(b);
       b.touching = b.yb >= ah - 3;
       const xa = g.rowX0[b.yb], xb = g.rowX1[b.yb];
       b.clipped = b.bx0 <= xa + 1 || b.bx1 >= xb - 2;
-      b.usable = !b.touching && !b.clipped;
+      b.soft = b.clipped && !b.touching && (b.bx1 - b.bx0 + 1) >= bc.softMinLane * lw;   // Т11: кромка упёрлась в границу зоны, но видна на заметной ширине — точка берётся с большей σ
+      b.usable = !b.touching && (!b.clipped || b.soft);
       b.refined = false;
       out.push(b);
     }
@@ -1424,7 +1304,7 @@ function wlsLine(P, i0, i1) {
 class Tracker {
   constructor(cals, ah, cfg, geo) {
     this.cals = cals; this.ah = ah; this.tc = cfg || CONFIG.track; this.geo = geo || null;
-    this.tracks = []; this.nextId = 1; this.lastT = null; this.passes = []; this.ghosts = []; this.limbo = []; this.lastDead = []; this.onEv = null;
+    this.tracks = []; this.nextId = 1; this.lastT = null; this.passes = []; this.ghosts = []; this.limbo = []; this.lastDead = []; this.dirLane = []; this.onEv = null;
   }
 
   reset() { this.tracks = []; this.lastT = null; this.limbo = []; }
@@ -1445,12 +1325,17 @@ class Tracker {
       for (let bi = 0; bi < blobs.length; bi++) {
         const b = blobs[bi];
         if (Math.abs(b.lane - tr.lane) > 1) continue;
-        const xp = pr.lane === b.lane && pr.xl != null ? pr.xl : pr.x;
+        if (tr.gwT !== t) { tr.gwT = t; tr.gw = !tr.hasVel && !pr.metric ? this._newWin(tr, dtT) : null; }   // Т9: первая привязка (скорости нет) — окно в метрах, а не фикс. 26 px
+        const gwin = tr.gw;
+        let xp = pr.lane === b.lane && pr.xl != null ? pr.xl : pr.x;
+        if (gwin && this.geo && tr.u != null && b.lane >= 1 && b.lane <= this.geo.N) { const g = this.geo, yy = clamp(Math.round(b.yEdge), 0, g.ah - 1), N1 = g.N + 1; xp = g.xsAt[yy * N1 + b.lane - 1] + tr.u * (g.xsAt[yy * N1 + b.lane] - g.xsAt[yy * N1 + b.lane - 1]); }   // …и место в полосе — на строке самого блоба (полосы сходятся к горизонту)
         const gx = Math.max(tc.gateMinX, 0.6 * Math.max(tr.bw, b.bw)) + tc.gateVx * Math.abs(tr.vx) * dtT + tc.gateMiss * tr.miss;
         const gy = pr.metric ? tc.gateBaseY + 0.3 * Math.abs(pr.y - tr.y) + 0.4 * Math.abs(tr.vy) * dtT : (tr.hasVel ? tc.gateBaseY + tc.gateVy * Math.abs(tr.vy) * dtT + 0.5 * Math.abs(pr.y - tr.y) : tc.gateNewY + 40 * dtT);
         const dx = Math.abs(b.xc - xp), dy = Math.abs(b.yEdge - pr.y);
         const inside = xp >= b.x0 - 4 && xp <= b.x1 + 4;      // предсказанная точка внутри блоба — форма блоба могла измениться
-        if ((dx > gx && !inside) || dy > gy) continue;
+        const yOk = gwin && b.yEdge >= gwin.yLo - tc.gateBaseY && b.yEdge <= gwin.yHi + tc.gateBaseY;   // блоб в метрическом окне первой привязки
+        if ((dx > gx && !inside) || (dy > gy && !yOk)) continue;
+        const gyN = yOk && dy > gy ? Math.max(gy, gwin.yHi - gwin.yLo) : gy;
         if (pr.metric) {
           const li = tr.lane - 1, vb = this._v(b.xc, b.yEdge, li);
           if (vb >= calAt(this.cals, li).vFar) {
@@ -1458,7 +1343,7 @@ class Tracker {
             if (isFinite(sb) && Math.abs(sb - pr.s) > tc.gateMetricM + 3 * mpp + tc.gateMetricV * Math.abs(tr.fit.slope) * dtT + 0.6 * tr.miss) continue;
           }
         }
-        cand.push({ ti, bi, c: Math.min(1.5, (dx / gx) * (dx / gx)) + (dy / gy) * (dy / gy) + (b.lane !== tr.lane ? 0.5 : 0) });
+        cand.push({ ti, bi, c: Math.min(1.5, (dx / gx) * (dx / gx)) + (dy / gyN) * (dy / gyN) + (b.lane !== tr.lane ? 0.5 : 0) });
       }
     }
     cand.sort((a, b) => a.c - b.c);
@@ -1490,10 +1375,10 @@ class Tracker {
       const b = blobs[bi];
       let frag = false;
       for (const tr of T) {
-        if (tr.dead || tr.lane !== b.lane || !tr.blob) continue;
+        if (tr.dead || tr.lane !== b.lane || !tr.blob || tr.tLast !== t) continue;   // Т9: «осколком» блоб считается только у трека, получившего блоб в этом же кадре — застрявший трек не блокирует рождение нового
         const a = tr.blob, ov = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0) + 1;
         const gapY = Math.max(0, Math.max(a.y0, b.y0) - Math.min(a.y1, b.y1));
-        if (ov >= tc.dupOverlap * Math.min(a.x1 - a.x0 + 1, b.x1 - b.x0 + 1) && gapY <= Math.max(a.y1 - a.y0 + 1, b.y1 - b.y0 + 1) && (b.yEdge < a.yEdge || b.area < 0.6 * a.area) && !(a.detK > 0 && b.detK > 0 && a.detT === b.detT && a.detK !== b.detK)) { frag = true; break; }   // две разные рамки детектора — две машины, а не осколок
+        if (ov >= tc.dupOverlap * Math.min(a.x1 - a.x0 + 1, b.x1 - b.x0 + 1) && gapY <= Math.max(a.y1 - a.y0 + 1, b.y1 - b.y0 + 1) && (b.yEdge < a.yEdge || b.area < 0.6 * a.area)) { frag = true; break; }
       }
       if (frag) continue;
       if (this._revive(b, t, T)) continue;
@@ -1514,6 +1399,23 @@ class Tracker {
     return this._finishAll(finished, t);
   }
 
+  // Т9: окно первой привязки (у трека одна точка, скорости нет) — в метрах: за dt машина проходит не больше vmax·dt. В px это 60–140 у низа кадра и 5–10 у верха.
+  // Вперёд — vmax·dt, назад — 1,5 м, если направление полосы уже известно (иначе в обе стороны). Возвращает допустимые строки кадра {yLo, yHi} или null
+  _newWin(tr, dtT) {
+    const tc = this.tc, li = tr.lane - 1, til = calAt(this.cals, li).til, s0 = sOfV(this.cals, this._v(tr.x, tr.y, li), li);
+    if (!isFinite(s0) || !(tc.gateVmaxKmh > 0)) return null;
+    const fw = tc.gateVmaxKmh / 3.6 * Math.min(dtT, 0.3) + 1, dp = this.dirLane[tr.lane] || 0, bk = dp ? 1.5 : fw;
+    const row = s => { const v = vOfS(this.cals, s, li); return isFinite(v) && v > 0 && v < 1.2 ? (til && this.geo ? tiltY(til, tr.x / this.geo.aw, v) : v) * this.ah : null; };
+    const yA = row(s0 + (dp < 0 ? bk : fw)), yB = row(s0 - (dp > 0 ? bk : fw));
+    return { yLo: yA == null ? 0 : yA, yHi: yB == null ? this.ah : yB };
+  }
+  // Т10: машина ли блоб — рамка детектора, либо размер и форма (как pendOk)
+  _carLike(b) {
+    if (b.det) return true;
+    if (!this.geo) return false;
+    const w = b.x1 - b.x0 + 1, h = b.y1 - b.y0 + 1;
+    return b.area / (w * h) >= 0.35 && w >= 0.5 * laneWidthAt(this.geo, b.yEdge, b.lane) && Math.max(h / w, w / h) <= 4;
+  }
   // Т1.2: блоб рядом с предсказанным (метрическая модель s(t)) местом только что потерянного трека — та же машина, ID сохраняется
   _revive(b, t, T) {
     const tc = this.tc;
@@ -1549,7 +1451,7 @@ class Tracker {
       const gapY = Math.max(0, Math.max(A.y0, B.y0) - Math.min(A.y1, B.y1));
       const close = Math.abs(a.x - b.x) <= 0.6 * Math.max(a.bw, b.bw) && Math.abs(a.y - b.y) <= tc.dupGapPx;
       const touch = ov >= tc.dupOverlap * Math.min(A.x1 - A.x0 + 1, B.x1 - B.x0 + 1) && gapY <= 3;
-      if ((!close && !touch) || (A.detK > 0 && B.detK > 0 && A.detT === B.detT && A.detK !== B.detK)) continue;   // две разные рамки детектора — две машины, не дубль
+      if (!close && !touch) continue;
       const lo = q(a) >= q(b) ? b : a; lo.dead = true; lo.dup = true; lo.why = 'dup';
     }
   }
@@ -1599,12 +1501,13 @@ class Tracker {
 
   _sample(tr, b, t) {
     tr.blob = b; tr.blobT = t;
+    if (this._carLike(b)) tr.carHits = (tr.carHits || 0) + 1;
     if (!b.usable) return;                                   // кромка у края кадра или обрезана: трек живёт, точек нет
     const li = tr.lane - 1, v = this._v(b.xc, b.yEdge, li);
     if (v < calAt(this.cals, li).vFar) return;               // за зоной полосы скорость не обновляется (метка держит последнее значение)
     const s = sOfV(this.cals, v, li);
     if (!isFinite(s)) return;
-    const sg = Math.abs(sOfV(this.cals, v + this.tc.edgeSigmaPx / this.ah, li) - s);   // погрешность точки, м
+    const sg = Math.abs(sOfV(this.cals, v + (b.soft ? 1.5 : 1) * this.tc.edgeSigmaPx / this.ah, li) - s);   // погрешность точки, м
     if (!(sg > 1e-4)) return;
     tr.pts.push({ t, s, v, x: b.xc, sg });
     this._live(tr, t);
@@ -1613,31 +1516,26 @@ class Tracker {
   // Окно расширяется назад, пока ожидаемая погрешность наклона 1/√Σw(t−t̄)², отнесённая к скорости, больше maxRelErr (окно minWinSec…winMaxSec, ≥ 3 точек)
   _live(tr, t) {
     const tc = this.tc, P = tr.pts, n = P.length;
-    if (n < 3) { tr.blk = 'few_live'; return; }
+    if (n < 3) return;
     let i0 = 0; while (i0 < n - 3 && t - P[i0].t > tc.winMaxSec) i0++;   // Т3.1: накопленная регрессия от входа в зону — та же формула, что у итога
-    if (t - P[i0].t < tc.minWinSec) { tr.blk = 'few_live'; return; }
+    if (t - P[i0].t < tc.minWinSec) return;
     const f = wlsLine(P, i0, n - 1);
     if (!f) return;
     tr.err = f.rel; tr.win = t - P[i0].t; tr.path = Math.abs(P[n - 1].s - P[0].s);
-    if (!(f.rel <= tc.showErr) || f.rms > tc.maxLiveRmsM) { tr.stable = 0; tr.blk = 'err'; return; }   // ненадёжно: «…» или прежнее значение
+    if (!(f.rel <= tc.showErr) || f.rms > tc.maxLiveRmsM) { tr.stable = 0; return; }   // ненадёжно: «…» или прежнее значение
     const fk = Math.abs(f.slope) * 3.6, prevK = tr.lastSlope == null ? null : Math.abs(tr.lastSlope) * 3.6;
     if (fk > tc.maxSpeedKmh) { tr.stable = 0; return; }
     // согласованность: оценки подряд должны совпадать; резкий скачок — выброс (пятно, осколок), его не принимаем
     const jump = prevK != null && Math.abs(fk - prevK) > (tr.shown ? tc.jumpKmh : tc.stableKmh);
     if (!tr.shown || !jump) tr.lastSlope = f.slope;
     if (jump) {
-      tr.stable = 0; tr.blk = 'jump';
-      if (tr.shown && ++tr.jumps >= tc.maxJumps) { tr.pts = []; tr.fit = null; tr.flt = null; tr.shown = false; tr.strict = false; tr.kmh = null; tr.minK = Infinity; tr.maxK = 0; tr.jumps = 0; tr.lastSlope = null; tr.moved = false; tr.x0 = tr.x; tr.y0 = tr.y; }
+      tr.stable = 0;
+      if (tr.shown && ++tr.jumps >= tc.maxJumps) { tr.pts = []; tr.fit = null; tr.flt = null; tr.shown = false; tr.kmh = null; tr.minK = Infinity; tr.maxK = 0; tr.jumps = 0; tr.lastSlope = null; tr.moved = false; tr.x0 = tr.x; tr.y0 = tr.y; }
       return;
     }
     tr.stable++; tr.jumps = 0;
     const nMin = tr.blob && tr.blob.det && vdGate() ? Math.min(3, tc.minShowPts) : tc.minShowPts;   // Т1.3: рамка детектора подтверждает машину — хватает 3 точек
-    const mv = tr.moved && n >= nMin, strictOk = mv && tr.stable >= tc.showStable && tr.win >= tc.minShowWinSec && tr.path >= Math.max(tc.minTravelM, tc.minShowPath);
-    const bl = tr.blob, shapeOk = !bl || !vdGate() || bl.det || (bl.area >= 0.35 * bl.bw * (bl.y1 - bl.y0 + 1) && bl.bw >= 0.5 * bl.laneW);   // как pendOk: рамка детектора либо размер и форма
-    const earlyOk = !strictOk && mv && shapeOk && tr.stable >= tc.earlyStable && tr.win >= tc.earlyWinSec && tr.path >= Math.max(tc.minTravelM, tc.earlyPath);   // live-число раньше, с «~»
-    if (strictOk) tr.strict = true;
-    tr.blk = !mv ? 'pts_move' : !shapeOk ? 'shape' : tr.stable < tc.earlyStable ? 'stable' : tr.win < tc.earlyWinSec ? 'win' : tr.path < Math.max(tc.minTravelM, tc.earlyPath) ? 'path' : '';   // что мешало показу — в журнал
-    const okShow = strictOk || earlyOk;
+    const okShow = tr.stable >= tc.showStable && n >= nMin && tr.win >= tc.minShowWinSec && tr.moved && tr.path >= Math.max(tc.minTravelM, tc.minShowPath);
     tr.fit = { icpt: f.icpt, slope: f.slope, tm0: f.tm };
     // Т3–5: rawSpeed (короткое окно, быстрый LIVE) → filteredSpeed (Калман, |dv/dt| ≤ maxAccel) → displaySpeed (шаг ≤ maxStepKmh)
     let j0 = n - 3; while (j0 > i0 && t - P[j0].t < tc.liveWinSec) j0--;
@@ -1651,17 +1549,17 @@ class Tracker {
     }
     const gb = this._gates(tr), kA = Math.abs(f.slope) * 3.6, kB = gb ? gb.v * 3.6 : null;   // A — регрессия s(t), B — время между воротами
     let kmh = Math.abs(tr.flt.v) * 3.6;
-    if (tr.shown && tr.kmh != null) kmh = clamp(kmh, tr.kmh - tc.maxStepKmh, tr.kmh + (tr.strict ? tc.maxStepKmh : 1));   // «~» растёт не быстрее 1 км/ч за шаг
+    if (tr.shown && tr.kmh != null) kmh = clamp(kmh, tr.kmh - tc.maxStepKmh, tr.kmh + tc.maxStepKmh);
     kmh = Math.round(kmh);
     const dAB = kB == null ? null : Math.abs(kA - kB) / Math.max(kA, kB, 1);   // не усредняем: расхождение только снижает доверие
     let conf = dAB == null ? 'mid' : dAB <= tc.gateAgree ? 'high' : dAB <= 2.5 * tc.gateAgree ? 'mid' : 'low';
     if (conf === 'high' && (tr.stable < tc.showStable || f.rel > tc.maxRelErr)) conf = 'mid';
     if (kmh > tc.highKmh && conf !== 'high') conf = 'low';   // высокую скорость не режем, а проверяем вторым способом → «~140»
     tr.rawK = Math.abs(raw) * 3.6; tr.fltK = Math.abs(tr.flt.v) * 3.6; tr.stabK = kA; tr.kmhB = kB; tr.conf = conf;   // LIVE / фильтр / STABLE / B (для отладки)
-    tr.kmh = kmh; tr.dir = f.slope < 0 ? -1 : 1; tr.liveT = t; tr.tilde = f.rel > tc.maxRelErr || conf === 'low' || !tr.strict;
-    if (kmh >= tc.minSpeedKmh && (tr.shown || strictOk || (earlyOk && conf !== 'low'))) {
+    tr.kmh = kmh; tr.dir = f.slope < 0 ? -1 : 1; tr.liveT = t; tr.tilde = f.rel > tc.maxRelErr || conf === 'low';
+    if (kmh >= tc.minSpeedKmh && (tr.shown || okShow)) {
       if (!tr.tilde) { tr.minK = Math.min(tr.minK, kmh); tr.maxK = Math.max(tr.maxK, kmh); }
-      if (!tr.shown) { tr.shown = true; tr.justShown = true; if (this.onEv) this.onEv('show', tr, t); }
+      if (!tr.shown) { tr.shown = true; tr.justShown = true; this.dirLane[tr.lane] = tr.dir; if (this.onEv) this.onEv('show', tr, t); }
     }
   }
 
@@ -1684,7 +1582,7 @@ class Tracker {
     const out = [];
     for (const tr of list) {
       const ps = this._finish(tr, t);
-      if (this.onEv) this.onEv('end', tr, t, ps ? (ps.late ? 'pass_late' : 'pass') : (tr.dup ? 'dup' : (!tr.shown ? 'never_shown:' + (tr.blk || 'no_live') : (tr.pts.length < this.tc.finalMinPts ? 'few_pts:' + tr.pts.length : (tr.strict ? 'rejected' : 'live_only')))) + (tr.why ? '/' + tr.why : ''), ps);
+      if (this.onEv) this.onEv('end', tr, t, ps ? 'pass' : (tr.dup ? 'dup' : (!tr.shown ? 'never_shown' : (tr.pts.length < this.tc.finalMinPts ? 'few_pts' : 'rejected'))) + (tr.why ? '/' + tr.why : ''), ps);
       if (ps) { out.push(ps); this.passes.push(ps); if (this.passes.length > 50) this.passes.shift(); }
     }
     return out;
@@ -1692,19 +1590,18 @@ class Tracker {
 
   _finish(tr, t) {
     const tc = this.tc, P = tr.pts, n = P.length;
-    if (tr.dup || n < tc.finalMinPts || (!tr.shown && !(tr.drawn || tr.frames >= tc.confirmFrames))) return null;
+    if (tr.dup || n < tc.finalMinPts) return null;
     const fit = wlsLine(P, 0, n - 1);
     if (!fit) return null;
     const kmh = Math.abs(fit.slope) * 3.6;
     if (kmh < tc.minSpeedKmh || !(fit.rel <= tc.showErr) || fit.rms > tc.finalMaxRmsM) return null;
+    if (!tr.shown && !(tr.moved && (tr.carHits || 0) >= 3 && fit.rel <= tc.maxRelErr && fit.rms <= tc.unshownMaxRmsM && Math.abs(P[n - 1].s - P[0].s) >= tc.unshownMinPathM && kmh <= tc.maxSpeedKmh)) return null;   // Т10: число не успело показаться — проезд берём по итоговой регрессии, если она хорошая и объект — машина
     if ((isFinite(tr.minK) && tr.maxK - tr.minK > tc.maxSpreadKmh) || Math.abs(P[n - 1].s - P[0].s) < tc.minTravelM) return null;
     const mn = isFinite(tr.minK) ? Math.min(tr.minK, kmh) : kmh, mx = tr.maxK > 0 ? Math.max(tr.maxK, kmh) : kmh;
-    const ps = { id: tr.id, lane: tr.lane, dir: fit.slope < 0 ? -1 : 1, kmh, kmhMin: mn, kmhMax: mx, n, rms: fit.rms, rel: fit.rel, path: Math.abs(P[n - 1].s - P[0].s), live: tr.kmh == null ? kmh : tr.kmh, t0: P[0].t, t1: P[n - 1].t, wall: Date.now(), blob: tr.blob, blobT: tr.blobT, snap: tr.snap || null };
+    const ps = { id: tr.id, lane: tr.lane, dir: fit.slope < 0 ? -1 : 1, kmh, kmhMin: mn, kmhMax: mx, n, rms: fit.rms, rel: fit.rel, path: Math.abs(P[n - 1].s - P[0].s), live: tr.kmh, t0: P[0].t, t1: P[n - 1].t, wall: Date.now(), blob: tr.blob, blobT: tr.blobT, snap: tr.snap || null };
     const gb = this._gates(tr), kB = gb ? gb.v * 3.6 : null, dAB = kB == null ? null : Math.abs(kmh - kB) / Math.max(kmh, kB, 1);
     ps.kmhA = kmh; ps.kmhB = kB; ps.gatesN = gb ? gb.n : 0;   // FINAL: A и B раздельно (сравнение методов), без усреднения
     ps.conf = dAB == null ? 'mid' : dAB <= tc.gateAgree ? 'high' : dAB <= 2.5 * tc.gateAgree ? 'mid' : 'low';
-    if (!tr.shown) { if (kB == null || ps.conf !== 'high' || !(fit.rel <= tc.maxRelErr)) return null; ps.late = true; }   // метка была, числа не успело: итог при согласии ворот A/B и чистой регрессии
-    else if (!tr.strict && (kB == null || ps.conf === 'low')) return null;   // было только live-«~»: в список проездов — лишь при согласии ворот A/B
     return ps;
   }
 }
@@ -1714,7 +1611,7 @@ class Track {
     this.id = id; this.lane = b.lane; this.pts = []; this.t0 = t; this.tLast = t; this.miss = 0; this.frames = 1;
     this.x = b.xc; this.y = b.yEdge; this.bw = b.bw; this.vx = 0; this.vy = 0; this.hasVel = false;
     this.blob = b; this.blobT = t; this.kmh = null; this.dir = 0; this.minK = Infinity; this.maxK = 0;
-    this.shown = false; this.strict = false; this.blk = ''; this.justShown = false; this.dead = false; this.snap = null; this.liveT = -1;
+    this.shown = false; this.justShown = false; this.dead = false; this.snap = null; this.liveT = -1;
     this.stable = 0; this.jumps = 0; this.lastSlope = null; this.x0 = b.xc; this.y0 = b.yEdge; this.moved = false; this.dup = false;
     this.hist = [{ t, x: b.xc, y: b.yEdge }]; this.fit = null; this.u = b.u; this.occluded = false; this.flt = null; this.err = null; this.win = 0; this.tilde = false;
   }
@@ -2884,13 +2781,13 @@ function captureSnap(tr) {
 }
 
 /* Т8: счётчики и журнал треков (рождение, показ, потеря + причина), выгрузка кнопкой; Т4: проверка блоба для «…» */
-const newCnt = () => ({ born: 0, shown: 0, lost: 0, revive: 0, idSw: 0, falseTags: 0, missed: 0, drop: 0, why: {} });
+const newCnt = () => ({ born: 0, shown: 0, lost: 0, revive: 0, idSw: 0, falseTags: 0, missed: 0 });
 const cntSuffix = () => R.cnt ? ' · пропущ. ' + R.cnt.missed + ' · ложн. ' + R.cnt.falseTags + ' · смен ID ' + R.cnt.idSw : '';
 function refreshSum() { const e = $('drawerSum'); if (e) e.textContent = e.textContent.replace(/ · пропущ\..*$/, '') + cntSuffix(); }
 function jl(ev, tr, t, why, ps) {
   const C = R.cnt; if (!C) return;
   if (ev === 'birth') C.born++; else if (ev === 'show') C.shown++; else if (ev === 'lost') C.lost++; else if (ev === 'revive') C.revive++; else if (ev === 'idswitch') C.idSw++;
-  else if (ev === 'end' && tr.drawn && !ps) { C.falseTags++; const k = String(why).split(/[:/]/)[0]; C.why[k] = (C.why[k] || 0) + 1; }   // метка была, числа в списке нет — по причинам
+  else if (ev === 'end' && tr.drawn && !ps) C.falseTags++;
   if (R.log.length < 5000) R.log.push([t.toFixed(2), ev, tr.id, tr.lane, tr.pts.length, tr.kmh == null ? '' : Math.round(tr.kmh), why || '']);
   refreshSum();
 }
@@ -2911,7 +2808,7 @@ function pendOk(b) {   // «…» только для настоящей маш�
 }
 function exportLog() {
   if (!R.log || !R.log.length) { toast('Журнал пуст.'); return; }
-  const C = R.cnt, head = '# рождено ' + C.born + '; показано ' + C.shown + '; потерь ' + C.lost + '; ID удержан ' + C.revive + '; смен ID ' + C.idSw + '; ложных меток ' + C.falseTags + '; пропущено ' + C.missed + '; метки без проезда по причинам ' + JSON.stringify(C.why) + '; дальних блобов отброшено ' + C.drop;
+  const C = R.cnt, head = '# рождено ' + C.born + '; показано ' + C.shown + '; потерь ' + C.lost + '; ID удержан ' + C.revive + '; смен ID ' + C.idSw + '; ложных меток ' + C.falseTags + '; пропущено ' + C.missed;
   const txt = '\uFEFF' + head + '\r\nt, с;событие;ID;полоса;точек;км/ч;причина\r\n' + R.log.map(r => r.join(';')).join('\r\n');
   try { const url = URL.createObjectURL(new Blob([txt], { type: 'text/csv;charset=utf-8' })); const a = el('a', { href: url, download: 'treki-' + Date.now() + '.csv' }); document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 8000); } catch (e) { toast('Не удалось сохранить файл.'); }
 }
@@ -2955,24 +2852,17 @@ async function startRun() {
   if (!A.ok) { toast(A.msg); return; }
   const btn = $('btnNext'); btn.disabled = true;
   try {
-    if (VD.st === 'loading') { setMsg('Загрузка детектора машин…'); await vdWait(12000); }   // дать детектору дозагрузиться и прогреться
-    if (VD.st === 'ready') {   // Т6: до конца прогрева анализ не стартует
-      const fw = video.videoWidth, fh = video.videoHeight, [ww, wh] = VD.mode === 'worker' ? vdBmpSize(fw, fh) : [fw, fh];
-      if (ww > 0 && VD.warm !== VD.mode + ww + 'x' + wh) { setMsg('Прогрев детектора…'); toast('Прогрев детектора…', 2000); await vdWarm(ww, wh); }
-      await vdCalBoxes(S.frozen.cv);
-      setMsg('');
-    }
+    if (VD.st === 'loading') await vdWait(4000);   // дать детектору машин дозагрузиться
     const P = prepareAnalysis();    // свежая подготовка по текущим точкам
     prep = P;
     Object.assign(R, {
       aw: P.aw, ah: P.ah, ax: P.ax, gray: new Uint8Array(P.aw * P.ah), geo: P.geo, stab: P.stab, stabOn: P.stabOk && CONFIG.stab.enabled, dyH: [],
       det: (() => { const d = new MotionDetector(P.geo); d.seed(P.gcal); return d; })(), trk: new Tracker(S.calibs.slice(), P.ah, null, P.geo), p: [0, 0, 0], prevP: null, gate: new StabGate(), stabState: P.stabOk && CONFIG.stab.enabled ? 'init' : 'off',
       good: 0, bad: 0, ghosts: [], lastT: null, tNow: 0, timeMode: null, fpsLog: [], paused: false, ended: false, geoBad: false, hudT: 0,
-      procEma: 0, refEma: 0, refineOff: false, anIv: 1000 / CONFIG.perf.maxFps, lvl: 0, hiN: 0, loN: 0, pfRing: [], pfT: null, pfW: 0, pfSlow: 0, srcT: null, srcDt: 0, alT: 0, nProc: 0, lastLow: 0, t0wall: performance.now(), shiftPx: 0, stabInfo: null, nBlobs: 0, lastRes: null, cnt: newCnt(), log: [], missT: -9, vdSeen: -1
+      procEma: 0, refEma: 0, refineOff: false, anIv: 1000 / CONFIG.perf.anFps, hi: false, srcT: null, srcDt: 0, alT: 0, nProc: 0, lastLow: 0, t0wall: performance.now(), shiftPx: 0, stabInfo: null, nBlobs: 0, lastRes: null, cnt: newCnt(), log: [], missT: -9, vdSeen: -1
     });
     R.rvfc = 0; R.raf = 0;
     R.trk.onEv = jl;
-    if (!R.ltObs && window.PerformanceObserver) { try { R.ltObs = new PerformanceObserver(l => { for (const e of l.getEntries()) if (R.running && R.log && R.log.length < 5000 && (R.nLong = (R.nLong || 0) + 1) <= 150) R.log.push([R.tNow.toFixed(2), 'longtask', '', '', '', '', Math.round(e.duration) + ' мс']); }); R.ltObs.observe({ entryTypes: ['longtask'] }); } catch (_) {} }   // длинные задачи основного потока — в журнал (причина фризов)
     if (!R.maskCv) { R.maskCv = document.createElement('canvas'); R.rc = document.createElement('canvas'); R.rcx = R.rc.getContext('2d', { willReadFrequently: true }); }
     R.maskCv.width = P.aw; R.maskCv.height = P.ah; R.maskX = R.maskCv.getContext('2d'); R.maskImg = R.maskX.createImageData(P.aw, P.ah);
     S.mode = 'run'; appEl.classList.add('run'); document.body.classList.add('running');
@@ -3032,26 +2922,6 @@ video.addEventListener('ended', () => {
   R.ended = true; flushTracks(); setMsg('Видео закончилось. Результаты — в списке проездов (↺ — заново).'); redraw();
 });
 
-/* Т1: профиль этапов кадра — среднее и максимум за 5 с; кадр > 100 мс (или провал частоты) пишется в журнал с разбивкой */
-const PF_ST = ['grab', 'vd', 'stab', 'mot', 'ref', 'trk', 'draw', 'tot'];   // захват · детектор машин · стабилизация · движение/блобы · уточнение · трекер · отрисовка · всего
-function pfStr() {
-  const A = R.pfRing || [];
-  return PF_ST.map(k => { let s = 0, m = 0; for (const f of A) { s += f[k]; if (f[k] > m) m = f[k]; } return k + ' ' + (A.length ? (s / A.length).toFixed(1) : '-') + '/' + m.toFixed(0); }).join(' · ') + ' мс (ср/макс) · L' + R.lvl + ' · ' + VD.mode + ' · n=' + A.length;
-}
-function pfLines() {
-  const A = R.pfRing || [], f = k => { let s = 0, m = 0; for (const x of A) { s += x[k]; if (x[k] > m) m = x[k]; } return k + ' ' + (A.length ? (s / A.length).toFixed(1) : '-') + '/' + m.toFixed(0); };
-  return ['5 с, мс ср/макс: ' + ['grab', 'vd', 'stab', 'mot'].map(f).join(' · '), '   ' + ['ref', 'trk', 'draw', 'tot'].map(f).join(' · '), 'детектор: ' + (VD.mode === 'worker' ? 'воркер' : 'осн. поток') + ' · инф ' + VD.ms.toFixed(0) + ' мс · задержка ' + VD.lag.toFixed(0) + ' мс'];
-}
-function pfPush(fr) {
-  const A = R.pfRing, now = fr.w;
-  A.push(fr); while (A.length > 1 && now - A[0].w > 5000) A.shift();
-  if ((fr.tot > 100 || fr.gap > 250) && R.pfSlow++ < 300) {
-    const s = PF_ST.map(k => k + '=' + Math.round(fr[k])).join(' ') + ' gap=' + Math.round(fr.gap) + ' L' + R.lvl + ' ' + VD.mode + ' блобов=' + R.nBlobs + ' треков=' + (R.trk ? R.trk.tracks.length : 0);
-    console.warn('[PF медленный кадр] ' + s); if (R.log.length < 5000) R.log.push([R.tNow.toFixed(2), 'slow', '', '', '', '', s]);
-  }
-  if (R.pfT == null) R.pfT = now;
-  if (now - R.pfT >= 5000) { R.pfT = now; const s = pfStr(); console.log('[PF 5 с] ' + s); if (R.log.length < 5000) R.log.push([R.tNow.toFixed(2), 'perf', '', '', '', '', s]); }
-}
 function tmAdd(k, v) { const m = R.tm || (R.tm = {}); m[k] = m[k] ? 0.92 * m[k] + 0.08 * v : v; }
 function logFps(now, md) {
   const L = R.fpsLog; L.push({ w: now, pf: md && md.presentedFrames != null ? md.presentedFrames : null });
@@ -3072,23 +2942,14 @@ function adaptFileRate(now) {
     if (!R.rateToast) { R.rateToast = true; toast('Телефон не успевает разбирать каждый кадр: замедляю видео до ×' + String(r).replace('.', ',') + ' (время берётся из меток кадров — скорости машин не искажаются).', 6000); }
   }
 }
-// AUTO LOAD: цель — анализ каждого кадра, min(maxFps, fps источника). Перегруз (кадр > hiBusy интервала) → деградация по порядку:
-// L1 уточнение кромки реже и только у подтверждённых треков → L2 детектор реже (×2) → L3 реже анализ, но не ниже minFps. Возврат — в обратном порядке, с гистерезисом (loHold спокойных периодов)
-const anTarget = () => 1000 / Math.min(CONFIG.perf.maxFps, R.srcDt > 0 ? 1 / R.srcDt : CONFIG.perf.maxFps);
+// AUTO LOAD: обработка должна занимать меньше интервала анализа; перегруз → реже анализ, реже детектор и уточнение (трекер не отключается)
 function autoLoad(now) {
   const pc = CONFIG.perf;
-  if (!pc.auto || R.nProc < 10 || now - R.alT < pc.everyMs) return;
+  if (!pc.auto || R.nProc < 10 || now - R.alT < 600) return;
   R.alT = now;
-  const tgt = Math.min(anTarget(), 1000 / pc.minFps), busy = R.procEma / R.anIv;
-  if (busy > pc.hiBusy) {
-    R.loN = 0;
-    if (R.lvl < 3) { if (++R.hiN >= pc.hiHold) { R.hiN = 0; R.lvl++; } }
-    else R.anIv = Math.min(R.anIv * 1.15, 1000 / pc.minFps);
-  } else if (busy < pc.loBusy) {
-    R.hiN = 0;
-    if (++R.loN >= pc.loHold) { R.loN = 0; if (R.lvl === 3 && R.anIv > tgt + 0.5) R.anIv = Math.max(R.anIv / 1.1, tgt); else if (R.lvl > 0) R.lvl--; }
-  } else R.hiN = R.loN = 0;
-  if (R.lvl < 3) R.anIv = tgt;
+  const busy = R.procEma / R.anIv;
+  if (busy > pc.hiBusy) { R.hi = true; R.anIv = Math.min(R.anIv * 1.15, 1000 / pc.minFps); }
+  else if (busy < pc.loBusy) { R.hi = false; R.anIv = Math.max(R.anIv / 1.1, 1000 / pc.maxFps); }
 }
 function fpsNow() {
   const L = R.fpsLog || [], n = L.length;
@@ -3125,12 +2986,10 @@ function processFrame(now, md) {
 
   // --- стабилизация
   const sc = CONFIG.stab;
-  let measure = true, tVd = 0, tRf = 0;
+  let measure = true;
   if (R.stabOn) {
     const G = R.gate;
-    const tV0 = performance.now();
     vdTick(video, t, G.predict(t) || G.p, R.stab.pivot, aw, ah, R.stab);
-    tVd = performance.now() - tV0;
     R.stab.sway = G.sway || 0;
     const res = R.stab.estimate(gray, G.predict(t), G.state === 'init' || G.state === 'lost');
     R.lastRes = res;
@@ -3141,7 +3000,7 @@ function processFrame(now, md) {
     measure = act.measure;
   } else { R.p = [0, 0, 0]; R.stabState = 'off'; }
   const tS = performance.now();
-  tmAdd('grab', tG - tW0); tmAdd('stab', tS - tG - tVd);
+  tmAdd('grab', tG - tW0); tmAdd('stab', tS - tG);
   if (R.stabState === 'init') { setMsg('Ищу опорные детали кадра…'); R.procEma = 0.9 * R.procEma + 0.1 * (performance.now() - tW0); updateHud(); drawRun(); return; }
   if (R.stabState === 'lost') { setMsg('Держи ровнее — наведи как на калибровочном кадре (он просвечивает).'); updateHud(); drawRun(); return; }
   if (!measure) { updateHud(); return; }     // coast: кадр пропущен, метки и треки не сбрасываются
@@ -3152,10 +3011,8 @@ function processFrame(now, md) {
   if (R.det.didReset) { flushTracks(); toast('Сцена сильно изменилась — фон пересоздан.'); }
   if (ready) {
     blobs = R.det.extract();
-    if (vdGate()) for (const b of blobs) { const k = vdHit(b, t); b.det = k > 0; b.detK = k; b.detT = VD.t; }
-    const rj = R.det.rej; R.det.rej = null;   // Т5: блобы дальней трети, отброшенные фильтрами размера и формы
-    if (rj) for (const s of rj) if (R.cnt.drop < CONFIG.blob.dropLog) { R.cnt.drop++; R.log.push([t.toFixed(2), 'drop', '', '', '', '', s]); }
-    const tR0 = performance.now(); refineBlobs(blobs, tW0); tRf = performance.now() - tR0;
+    if (vdGate()) for (const b of blobs) b.det = vdHit(b);
+    refineBlobs(blobs, tW0);
     setMsg(R.stabOn && R.shiftPx > sc.warnShiftFrac * ah ? 'Кадр сдвинут — замер идёт, но точность ниже. Верни телефон как при калибровке.' : '');
   } else setMsg('Обучение фона…');
   R.nBlobs = blobs.length; R.blobs = blobs;
@@ -3164,11 +3021,10 @@ function processFrame(now, md) {
   for (const ps of fin) onPass(ps);
   if (vdGate() && VD.cal && VD.t !== R.vdSeen) { R.vdSeen = VD.t; countMissed(t); }
   for (const tr of R.trk.tracks) if (tr.shown && !tr.snapTaken && tr.pts.length >= 8) { tr.snapTaken = true; captureSnap(tr); }
-  const tT = performance.now(); tmAdd('trk', tT - tD);
+  tmAdd('trk', performance.now() - tD);
   R.nProc++;
   updateHud(); drawRun();
-  const tE = performance.now(), dW = tE - tW0; R.procEma = R.procEma ? 0.9 * R.procEma + 0.1 * dW : dW;
-  pfPush({ w: tE, gap: R.pfW ? tW0 - R.pfW : 0, grab: tG - tW0, vd: tVd, stab: tS - tG - tVd, mot: tD - tS - tRf, ref: tRf, trk: tT - tD, draw: tE - tT, tot: dW }); R.pfW = tW0;
+  const dW = performance.now() - tW0; R.procEma = R.procEma ? 0.9 * R.procEma + 0.1 * dW : dW;
   autoLoad(tW0 + dW);
 }
 
@@ -3176,10 +3032,8 @@ function processFrame(now, md) {
 function refineBlobs(blobs, tW0) {
   const rc = CONFIG.refine;
   if (!rc.enabled || R.refineOff || !blobs.length) return;
-  if (R.lvl >= 1 && (R.nProc & 1)) return;   // L1: уточняем через кадр…
-  let cand = blobs.filter(b => b.usable);
-  if (R.lvl >= 1) { const tc = CONFIG.track, cf = R.trk ? R.trk.tracks.filter(tr => tr.shown || tr.frames >= tc.confirmFrames) : []; cand = cand.filter(b => cf.some(tr => Math.abs(b.xc - tr.x) <= 0.5 * b.bw + tc.gateMinX && Math.abs(b.yEdge - tr.y) <= tc.gateNewY)); }   // …и только блобы подтверждённых треков
-  cand = cand.sort((a, b) => b.area - a.area).slice(0, R.lvl >= 1 ? 1 : rc.maxPerFrame);
+  if (R.hi && (R.nProc & 1)) return;   // перегруз: уточняем через кадр
+  const cand = blobs.filter(b => b.usable).sort((a, b) => b.area - a.area).slice(0, R.hi ? 1 : rc.maxPerFrame);
   for (const b of cand) {
     if (performance.now() - tW0 > 0.6 * R.anIv) return;   // кадр уже занял большую часть интервала — приоритет у трека
     const t0 = performance.now();
@@ -3238,8 +3092,7 @@ function drawRun() {
     R.ghosts = R.ghosts.filter(gh => gh.until > R.tNow && gh.until - R.tNow < 5);
     const list = [];
     for (const gh of R.ghosts) list.push({ cx: gh.cx, ce: gh.ce, y0: gh.y, kmh: gh.kmh, dir: gh.dir, lane: gh.lane, id: gh.id, ord: gh.ce, tilde: gh.tilde, fin: true });
-    const kept = [], near = (a, b) => { const ov = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0) + 1, gy = Math.max(0, Math.max(a.y0, b.y0) - Math.min(a.y1, b.y1)); return ov >= 0.5 * Math.min(a.x1 - a.x0 + 1, b.x1 - b.x0 + 1) && gy <= a.y1 - a.y0 + 1 && !(a.detK > 0 && b.detK > 0 && a.detT === b.detT && a.detK !== b.detK); };   // «…» не над и не рядом с уже размеченной машиной, если детектор не видит две разные
-    if (R.trk) for (const tr of R.trk.tracks.slice().sort((p, q) => (q.shown - p.shown) || (q.pts.length - p.pts.length))) {
+    if (R.trk) for (const tr of R.trk.tracks) {
       const bl = tr.blob; if (!bl) continue;
       const age = R.tNow - (tr.pts.length ? tr.pts[0].t : tr.t0);
       let show = false, pending = false;
@@ -3247,8 +3100,6 @@ function drawRun() {
       if (tr.shown && tr.kmh != null && tr.kmh >= minK) show = true;
       else if (!tr.shown && tr.moved && tr.frames >= tc.confirmFrames && (bl.touching ? tr.pts.length > 0 : age <= tc.pendingMaxSec) && bl.area >= CONFIG.blob.minAreaPx && pendOk(bl)) pending = true;
       if (!show && !pending) continue;
-      if (pending && kept.some(k => k.lane === tr.lane && near(k.bl, bl))) continue;
-      kept.push({ lane: tr.lane, bl });
       tr.drawn = true;
       list.push({ cx: bl.xc, ce: bl.yEdge, y0: bl.y0, kmh: pending ? null : tr.kmh, dir: pending ? 0 : tr.dir, lane: tr.lane, id: tr.id, ord: bl.yEdge, tilde: !pending && tr.tilde, dbg: S.debug && tr.err != null ? 'σ ' + fmt(100 * tr.err, 1) + '% · ' + fmt(tr.win, 2) + ' с · ' + tr.pts.length + ' т · ' + fmt(tr.path || 0) + ' м' : '' });
     }
@@ -3289,8 +3140,8 @@ function drawDebug(g, map, sx, sy, p) {
   }
   const f = fpsNow(), r = R.lastRes;
   g.font = '600 12px ui-monospace, Menlo, Consolas, monospace'; g.textAlign = 'left'; g.textBaseline = 'top';
-  const lines = ['dx=' + p[0].toFixed(2) + ' dy=' + p[1].toFixed(2) + ' θ=' + (p[2] * 57.296).toFixed(2) + '°', cntLine(), cntLine2(), 'блоки ' + (r ? r.inl : '-') + '/' + R.stab.nb + (R.stab.nSkip ? ' (−' + R.stab.nSkip + ' под маш.)' : '') + ' rho=' + (r && isFinite(r.rho) ? r.rho.toFixed(2) : '-'), 'fps ' + f.src.toFixed(0) + ' / анализ ' + f.an.toFixed(0) + ' · кадр ' + R.procEma.toFixed(1) + ' мс · L' + (R.lvl || 0), ...pfLines(), 'блобов ' + R.nBlobs + ' · движ. ' + (100 * R.det.fgFrac).toFixed(1) + '% · кромка ' + (R.refineOff ? 'грубая' : 'уточн. ' + R.refEma.toFixed(1) + ' мс')];
-  g.fillStyle = 'rgba(0,0,0,.65)'; g.fillRect(6, SH - 200, 440, lines.length * 16 + 8);
+  const lines = ['dx=' + p[0].toFixed(2) + ' dy=' + p[1].toFixed(2) + ' θ=' + (p[2] * 57.296).toFixed(2) + '°', cntLine(), cntLine2(), 'блоки ' + (r ? r.inl : '-') + '/' + R.stab.nb + (R.stab.nSkip ? ' (−' + R.stab.nSkip + ' под маш.)' : '') + ' rho=' + (r && isFinite(r.rho) ? r.rho.toFixed(2) : '-'), 'fps ' + f.src.toFixed(0) + ' / анализ ' + f.an.toFixed(0) + ' · кадр ' + R.procEma.toFixed(1) + ' мс', 'мс: захват ' + (R.tm && R.tm.grab ? R.tm.grab.toFixed(1) : '-') + ' · стаб ' + (R.tm && R.tm.stab ? R.tm.stab.toFixed(1) : '-') + ' · детект ' + (R.tm && R.tm.det ? R.tm.det.toFixed(1) : '-') + ' · трек ' + (R.tm && R.tm.trk ? R.tm.trk.toFixed(1) : '-'), 'блобов ' + R.nBlobs + ' · движ. ' + (100 * R.det.fgFrac).toFixed(1) + '% · кромка ' + (R.refineOff ? 'грубая' : 'уточн. ' + R.refEma.toFixed(1) + ' мс')];
+  g.fillStyle = 'rgba(0,0,0,.65)'; g.fillRect(6, SH - 200, 380, lines.length * 16 + 8);
   g.fillStyle = '#b8f5c8'; lines.forEach((s, i) => g.fillText(s, 10, SH - 196 + i * 16));
 }
 
@@ -3305,7 +3156,7 @@ function updateHud(force) {
   const low = f.an > 0 && f.an < 0.8 * Math.min(1000 / R.anIv, f.src || 99) && R.running && !R.paused;
   const ch = $('chFps');
   const pr = S.srcKind === 'file' && video.playbackRate < 0.995 ? ' ×' + String(video.playbackRate).replace('.', ',') : '';
-  ch.firstElementChild.textContent = f.src ? f.src.toFixed(0) + '/' + f.an.toFixed(0) + pr + ' L' + (R.lvl || 0) : '—';
+  ch.firstElementChild.textContent = f.src ? f.src.toFixed(0) + '/' + f.an.toFixed(0) + pr : '—';
   ch.classList.toggle('warn', low);
   if (low && now - R.lastLow > 30000 && R.nProc > 30) { R.lastLow = now; toast('Низкий fps (' + f.an.toFixed(0) + '): точность замера снижена. Включи режим 60 fps и закрой другие приложения.', 5000); }
   const st = $('chStab'), s = R.stabState;
