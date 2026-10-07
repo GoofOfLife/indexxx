@@ -281,6 +281,7 @@ const CONFIG = {
     tauWarm: 2,                // то же в первые секунды после старта, с
     warmSec: 2,                // длительность «быстрого обучения» фона, с
     holdFrac: 0.5,             // пиксель с разностью выше этой доли порога обновляет фон медленно
+    ghostSec: 2.5, ghostTau: 0.5, // пиксель в «движении» дольше ghostSec с — призрак (машина стартового кадра, тень): впитывается за ~ghostTau
     absorbSec: 25,             // через сколько с неподвижный объект впитывается в фон
     initFrames: 8,             // кадров на начальную модель фона (без замеров)
     gainStride: 7,             // шаг подвыборки при оценке сдвига яркости
@@ -1047,7 +1048,7 @@ class MotionDetector {
     this.bY = new Int32Array(L); this.bX0 = new Int32Array(L); this.bX1 = new Int32Array(L);
     this.clA = new Int32Array(L); this.clO = new Int32Array(L);
     this.xp = new Int32Array(4096);
-    this.gt = new Float32Array(n);
+    this.gt = new Float32Array(n); this.fa = new Uint8Array(n);
     this.hist = new Int32Array(128);
     let roi = 0;
     for (let y = geo.y0 + 1; y < geo.ah - 1; y++) roi += Math.max(0, geo.rowX1[y] - geo.rowX0[y]);
@@ -1058,7 +1059,7 @@ class MotionDetector {
   reset() {
     this.n = 0; this.t0 = null; this.lastT = null; this.off = 0; this.bigSince = null;
     this.fgFrac = 0; this.didReset = false;
-    this.vr.fill(this.cfg.varInit); this.fg.fill(0); this.fg2.fill(0); this.dif.fill(0); this.lab.fill(0); this.gt.fill(0); this.gradT = null;
+    this.vr.fill(this.cfg.varInit); this.fg.fill(0); this.fg2.fill(0); this.dif.fill(0); this.lab.fill(0); this.gt.fill(0); this.fa.fill(0); this.gradT = null;
   }
 
   get ready() { return this.n >= this.cfg.initFrames; }
@@ -1097,6 +1098,7 @@ class MotionDetector {
     let aFg = 1 - Math.exp(-dt / (cfg.absorbSec / 1.2));
     if (init) aBg = aFg = 1 / (this.n + 1);
     const mu = this.mu, vr = this.vr, fg = this.fg, fg2 = this.fg2, dif = this.dif, map = g.map;
+    const fa = this.fa, ghostN = Math.min(250, Math.max(10, Math.round(cfg.ghostSec / dt))), aGh = 1 - Math.exp(-dt / cfg.ghostTau);
 
     // --- сдвиг яркости (экспозиция): медиана разностей по редкой сетке, только вне прежней маски
     let off = 0;
@@ -1147,10 +1149,11 @@ class MotionDetector {
         let thr2 = K2 * v > T2 ? K2 * v : T2;
         const tg = gt[i] * gt[i] * sk2; if (tg > thr2) thr2 = tg;
         if (d2 > thr2) {
-          fg[i] = 1; fgCount++;
-          mu[i] += aFg * d;
+          if (fa[i] < 255) fa[i]++;
+          if (fa[i] > ghostN) { fg[i] = 0; mu[i] += aGh * d; }   // призрак: быстро впитываем
+          else { fg[i] = 1; fgCount++; mu[i] += aFg * d; }
         } else {
-          fg[i] = 0;
+          fg[i] = 0; fa[i] = 0;
           // «подозрительные» пиксели (разность выше доли порога) обновляем медленно — иначе далёкая машина впитывается в фон
           mu[i] += (d2 > hold * thr2 ? aFg : aBg) * d;
           const nv = v + aBg * (d2 - v);
@@ -1322,7 +1325,7 @@ class MotionDetector {
       b.yEdge = this.softEdge(b);
       b.touching = b.yb >= ah - 3;
       const xa = g.rowX0[b.yb], xb = g.rowX1[b.yb];
-      b.clipped = b.bx0 <= xa + 1 || b.bx1 >= xb - 2;
+      b.clipped = b.bx0 <= xa + 1 && b.bx1 >= xb - 2;   // обрезан с обеих сторон (шире зоны); с одной стороны нижняя кромка верна
       b.usable = !b.touching && !b.clipped;
       b.refined = false;
       out.push(b);
@@ -1619,11 +1622,11 @@ class Tracker {
     let i0 = 0; while (i0 < n - 3 && t - P[i0].t > tc.winMaxSec) i0++;   // Т3.1: накопленная регрессия от входа в зону — та же формула, что у итога
     if (t - P[i0].t < tc.minWinSec) { tr.blk = 'few_live'; return; }
     const f = wlsLine(P, i0, n - 1);
-    if (!f) return;
+    if (!f) { tr.blk = 'fit'; return; }
     tr.err = f.rel; tr.win = t - P[i0].t; tr.path = Math.abs(P[n - 1].s - P[0].s);
     if (!(f.rel <= tc.showErr) || (f.rms > tc.maxLiveRmsM && f.rmsZ > tc.maxLiveZ)) { tr.stable = 0; tr.blk = 'err'; return; }   // ненадёжно: «…» или прежнее значение
     const fk = Math.abs(f.slope) * 3.6, prevK = tr.lastSlope == null ? null : Math.abs(tr.lastSlope) * 3.6;
-    if (fk > tc.maxSpeedKmh) { tr.stable = 0; return; }
+    if (fk > tc.maxSpeedKmh) { tr.stable = 0; tr.blk = 'vmax'; return; }
     // согласованность: оценки подряд должны совпадать; резкий скачок — выброс (пятно, осколок), его не принимаем
     const jump = prevK != null && Math.abs(fk - prevK) > (tr.shown ? tc.jumpKmh : tc.stableKmh);
     if (!tr.shown || !jump) tr.lastSlope = f.slope;
@@ -1666,6 +1669,7 @@ class Tracker {
       if (!tr.tilde) { tr.minK = Math.min(tr.minK, kmh); tr.maxK = Math.max(tr.maxK, kmh); }
       if (!tr.shown) { tr.shown = true; tr.justShown = true; if (this.onEv) this.onEv('show', tr, t); }
     }
+    else if (!tr.shown) tr.blk = kmh < tc.minSpeedKmh ? 'slow' : (earlyOk && conf === 'low') ? 'conf' : (tr.blk || 'strict');
   }
 
   // Способ B: момент пересечения каждых ворот (интерполяция по v), скорость = Δs/Δt по всем парам ворот, медиана
@@ -3254,7 +3258,7 @@ function drawRun() {
       if (pending && kept.some(k => k.lane === tr.lane && near(k.bl, bl))) continue;
       kept.push({ lane: tr.lane, bl });
       tr.drawn = true;
-      list.push({ cx: bl.xc, ce: bl.yEdge, y0: bl.y0, kmh: pending ? null : tr.kmh, dir: pending ? 0 : tr.dir, lane: tr.lane, id: tr.id, ord: bl.yEdge, tilde: !pending && tr.tilde, dbg: S.debug && tr.err != null ? 'σ ' + fmt(100 * tr.err, 1) + '% · ' + fmt(tr.win, 2) + ' с · ' + tr.pts.length + ' т · ' + fmt(tr.path || 0) + ' м' : '' });
+      list.push({ cx: bl.xc, ce: bl.yEdge, y0: bl.y0, kmh: pending ? null : tr.kmh, dir: pending ? 0 : tr.dir, lane: tr.lane, id: tr.id, ord: bl.yEdge, tilde: !pending && tr.tilde, dbg: S.debug && tr.err != null ? 'σ ' + fmt(100 * tr.err, 1) + '% · ' + fmt(tr.win, 2) + ' с · ' + tr.pts.length + ' т · ' + fmt(tr.path || 0) + ' м' + (tr.shown ? '' : ' · ' + (tr.blk || 'ok') + ' ' + tr.stable) : '' });
     }
     list.sort((p, q) => q.ord - p.ord);       // ближние к камере размещаются первыми
     for (const it of list) {
