@@ -88,6 +88,7 @@ input[type=text],select{width:100%;min-height:48px;border-radius:12px;border:1px
 .lb.on{background:var(--acc);color:#04121f;border-color:transparent}
 .limitbox{display:flex;flex-direction:column;gap:10px}
 .nudge{flex-direction:row;align-items:center;justify-content:space-between}
+.segd{display:flex;gap:6px}.segd .btn{padding:6px 10px;min-height:34px;font-size:13px}.btn.on{outline:2px solid var(--acc)}
 #btnRec.rec{background:rgba(190,34,42,.9);border-color:#ff6b72;color:#fff}
 #hud{position:absolute;left:0;right:0;top:0;z-index:6;display:flex;justify-content:space-between;align-items:flex-start;gap:6px;flex-wrap:wrap;padding:calc(8px + env(safe-area-inset-top)) calc(8px + env(safe-area-inset-right)) 0 calc(8px + env(safe-area-inset-left));pointer-events:none}
 .hrow{display:flex;gap:6px;flex-wrap:wrap}
@@ -262,6 +263,8 @@ const CONFIG = {
     maxRoll: 0.17, predGain: 0.8, softRho: 1.25, swayPx: 0.5, swayMax: 1.5, swayEdge: 1.2, swayIter: 3,             // макс. угол поворота, рад (≈10°; было 0.06)
     detect: {                  // детектор машин на устройстве (MediaPipe Object Detector, EfficientDet-Lite0): блоки под машинами в опору не берутся
       enabled: true,
+      engine: 'mediapipe',   // 'mediapipe' (EfficientDet-Lite0) | 'yolo' (YOLOv8n, onnxruntime-web) — переключается в ⚙ Настройки или ?det=yolo
+      yolo: { url: './models/yolov8n.onnx', cdnUrl: 'https://cdn.jsdelivr.net/npm/node-red-contrib-yolov8@0.1.0/lib/model/yolov8n.onnx', sha: '505648ada344cd9f3f31e51d49c489c070819bc96cc758258a8fd51488e00579', ort: 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist', score: 0.25, scoreLow: 0.10, iou: 0.5, max: 20 },   // свои пороги: шкала уверенности YOLO другая
       lib: './models/vision_bundle.mjs', wasm: './models/wasm', model: './models/efficientdet_lite0.tflite',   // локальные файлы — интернет не нужен
       cdn: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14',   // запасной источник библиотеки и wasm, если локальных файлов нет
       modelCdn: 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite',
@@ -849,24 +852,96 @@ function vdWorkerSrc() {   // тело воркера (уходит в Blob): с
     } catch (x) { self.postMessage({ type: 'err', id: m.id, err: String(x) }); }
   };
 }
+function vdWorkerSrcYolo() {   // воркер YOLOv8n: onnxruntime-web (WebGPU → WASM), вход 640×640 с letterbox, выход [1,84,8400]; протокол и формат ответа как у MediaPipe-воркера
+  const S = 640, NA = 8400, COCO = { car: 2, motorcycle: 3, bus: 5, truck: 7 };
+  let ort = null, sess = null, g = null, buf = null, ids = [], cfg = null, ep = '';
+  const hex = b => Array.from(new Uint8Array(b), x => x.toString(16).padStart(2, '0')).join('');
+  const loadModel = async s => {
+    const r = await fetch(s.url); if (!r.ok) throw new Error('HTTP ' + r.status);
+    const bytes = new Uint8Array(await r.arrayBuffer());
+    if (s.sha && self.crypto && self.crypto.subtle) { const h = hex(await self.crypto.subtle.digest('SHA-256', bytes)); if (h !== s.sha) throw new Error('sha256 не совпал'); }
+    return bytes;
+  };
+  const prep = (src, w, h) => {   // letterbox в 640×640 (серый фон 114), RGB → float32 CHW
+    const k = Math.min(S / w, S / h), nw = Math.round(w * k), nh = Math.round(h * k), dx = (S - nw) >> 1, dy = (S - nh) >> 1;
+    g.fillStyle = 'rgb(114,114,114)'; g.fillRect(0, 0, S, S); g.drawImage(src, 0, 0, w, h, dx, dy, nw, nh);
+    const d = g.getImageData(0, 0, S, S).data, n = S * S;
+    for (let i = 0, j = 0; i < n; i++, j += 4) { buf[i] = d[j] / 255; buf[n + i] = d[j + 1] / 255; buf[2 * n + i] = d[j + 2] / 255; }
+    return { k, dx, dy };
+  };
+  const decode = (o, p, w, h) => {   // лучший класс из «машинных» на каждый якорь → порог scoreLow → NMS без учёта класса
+    const cand = [];
+    for (let i = 0; i < NA; i++) {
+      let best = 0;
+      for (let k = 0; k < ids.length; k++) { const v = o[(4 + ids[k]) * NA + i]; if (v > best) best = v; }
+      if (best < cfg.scoreLow) continue;
+      const cx = o[i], cy = o[NA + i], bw = o[2 * NA + i], bh = o[3 * NA + i];
+      cand.push({ x0: Math.max(0, (cx - bw / 2 - p.dx) / p.k), y0: Math.max(0, (cy - bh / 2 - p.dy) / p.k), x1: Math.min(w, (cx + bw / 2 - p.dx) / p.k), y1: Math.min(h, (cy + bh / 2 - p.dy) / p.k), s: best });
+    }
+    cand.sort((a, b) => b.s - a.s);
+    const keep = [];
+    for (const c of cand) {
+      let ok = c.x1 > c.x0 && c.y1 > c.y0;
+      for (let q = 0; ok && q < keep.length; q++) {
+        const e = keep[q], iw = Math.min(c.x1, e.x1) - Math.max(c.x0, e.x0), ih = Math.min(c.y1, e.y1) - Math.max(c.y0, e.y0);
+        if (iw > 0 && ih > 0) { const I = iw * ih; if (I / ((c.x1 - c.x0) * (c.y1 - c.y0) + (e.x1 - e.x0) * (e.y1 - e.y0) - I) > cfg.iou) ok = false; }
+      }
+      if (ok) { keep.push(c); if (keep.length >= cfg.max) break; }
+    }
+    return keep.map(c => [c.x0, c.y0, c.x1 - c.x0, c.y1 - c.y0, c.s >= cfg.score ? 1 : 0]);   // 5-й элемент: 1 — уверенная рамка, 0 — слабая (ByteTrack-lite)
+  };
+  const run = async () => { const out = await sess.run({ [sess.inputNames[0]]: new ort.Tensor('float32', buf, [1, 3, S, S]) }); return out[sess.outputNames[0]].data; };
+  self.onmessage = async e => {
+    const m = e.data;
+    try {
+      if (m.type === 'init') {
+        let err = '';
+        cfg = m.cfg; ids = (m.classes || []).map(n => COCO[n]).filter(v => v != null); buf = new Float32Array(3 * S * S);
+        g = new OffscreenCanvas(S, S).getContext('2d', { willReadFrequently: true });
+        try {
+          const mod = await import(m.ortBase + '/ort.webgpu.min.mjs'); ort = mod.InferenceSession ? mod : mod.default;
+          ort.env.wasm.wasmPaths = m.ortBase + '/'; ort.env.wasm.proxy = false;
+          ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, self.navigator.hardwareConcurrency || 2) : 1;
+        } catch (x) { err += 'ort: ' + x + '; '; }
+        if (ort) for (const s of m.models) {
+          let bytes; try { bytes = await loadModel(s); } catch (x) { err += 'модель ' + s.url + ': ' + x + '; '; continue; }
+          for (const eps of [['webgpu'], ['wasm']]) {
+            try { sess = await ort.InferenceSession.create(bytes, { executionProviders: eps, graphOptimizationLevel: 'all' }); ep = eps[0]; break; } catch (x) { err += eps[0] + ': ' + x + '; '; }
+          }
+          if (sess) break;
+        }
+        self.postMessage(sess ? { type: 'ready', ep } : { type: 'fail', err });
+      } else if (m.type === 'warm') {
+        buf.fill(0.45); for (let i = 0; i < m.n; i++) await run();
+        self.postMessage({ type: 'warmed' });
+      } else if (m.type === 'detect') {
+        const t0 = performance.now(); let boxes;
+        try { const p = prep(m.bmp, m.w, m.h); boxes = decode(await run(), p, m.w, m.h); } finally { m.bmp.close(); }
+        self.postMessage({ type: 'res', id: m.id, w: m.w, h: m.h, ms: performance.now() - t0, boxes });
+      }
+    } catch (x) { self.postMessage({ type: 'err', id: m.id, err: String(x) }); }
+  };
+}
 function vdWorkerStart() {   // false — воркера/ImageBitmap/OffscreenCanvas нет или GPU-делегат не взялся → остаётся основной поток
   const c = CONFIG.stab.detect;
   return new Promise(resolve => {
     let w = null, url = null, done = false, tm = 0;
     const end = ok => { if (done) return; done = true; clearTimeout(tm); if (url) URL.revokeObjectURL(url); if (ok) { VD.w = w; VD.mode = 'worker'; } else if (w) { try { w.terminate(); } catch (_) {} } resolve(ok); };
-    tm = setTimeout(() => end(false), 30000);
+    const yolo = c.engine === 'yolo';
+    tm = setTimeout(() => end(false), yolo ? 120000 : 30000);   // YOLO: ORT-wasm + модель — десятки МБ при первом запуске
     try {
       if (typeof Worker === 'undefined' || typeof createImageBitmap !== 'function' || typeof OffscreenCanvas === 'undefined') return end(false);
-      url = URL.createObjectURL(new Blob(['(' + vdWorkerSrc.toString() + ')()'], { type: 'text/javascript' }));
+      url = URL.createObjectURL(new Blob(['(' + (yolo ? vdWorkerSrcYolo : vdWorkerSrc).toString() + ')()'], { type: 'text/javascript' }));
       w = new Worker(url);
       w.onerror = e => { if (!done) end(false); else vdWorkerFail(e && e.message); };
       w.onmessage = e => vdOnMsg(e.data, end);
-      w.postMessage({ type: 'init', srcs: vdSrcs(), score: c.score, scoreLow: c.scoreLow, classes: c.classes });
+      if (yolo) { const y = c.yolo, u = p => new URL(p, location.href).href; w.postMessage({ type: 'init', ortBase: y.ort, models: [{ url: u(y.url), sha: y.sha }, { url: y.cdnUrl, sha: y.sha }], cfg: { score: y.score, scoreLow: y.scoreLow, iou: y.iou, max: y.max }, classes: c.classes }); }
+      else w.postMessage({ type: 'init', srcs: vdSrcs(), score: c.score, scoreLow: c.scoreLow, classes: c.classes });
     } catch (_) { end(false); }
   });
 }
 function vdOnMsg(m, end) {
-  if (m.type === 'ready') end(true);
+  if (m.type === 'ready') { VD.ep = m.ep || ''; end(true); }
   else if (m.type === 'fail') { console.warn('Воркер детектора не поднялся:', m.err); end(false); }
   else if (m.type === 'warmed') { if (VD.wres) VD.wres(); }
   else if (m.type === 'res') {
@@ -906,9 +981,21 @@ async function vdLoad() {
   const c = CONFIG.stab.detect;
   if (!c.enabled || VD.st !== 'idle') return;
   VD.st = 'loading';
-  if (!(c.worker && await vdWorkerStart()) && !await vdLoadMain()) return;   // сначала воркер; не вышло — основной поток
+  let ok = c.worker && await vdWorkerStart();
+  if (!ok && c.engine === 'yolo') { c.engine = 'mediapipe'; toast('YOLOv8n не загрузился (нужен интернет или файлы models/yolov8n.onnx) — включён MediaPipe.', 6000); ok = c.worker && await vdWorkerStart(); }
+  if (!ok && !await vdLoadMain()) return;   // сначала воркер; не вышло — основной поток
   await vdWarm(640, 360);   // Т6: холостые прогоны до готовности (для размера кадра запуска прогрев повторяется в startRun)
   VD.st = 'ready';
+}
+const vdName = () => (CONFIG.stab.detect.engine === 'yolo' ? 'YOLOv8n' : 'MediaPipe') + (VD.mode === 'worker' ? (VD.ep ? ' · ' + VD.ep : '') : ' · осн. поток') + (VD.st === 'ready' ? (VD.ms > 0 ? ' · ' + Math.round(VD.ms) + ' мс' : '') : ' · загрузка…');
+function vdSwitch(engine) {   // живое переключение детектора: старый воркер гасим, состояние сбрасываем, новый грузится в фоне
+  const c = CONFIG.stab.detect; if (c.engine === engine) return;
+  c.engine = engine; try { localStorage.setItem('ss_engine', engine); } catch (_) {}
+  try { if (VD.w) VD.w.terminate(); } catch (_) {}
+  VD.w = null; VD.det = null; VD.rq = null; VD.cal = null; VD.low = null; VD.calBoxes = null; VD.once = null; VD.warm = ''; VD.wErr = 0; VD.mode = 'main'; VD.st = 'idle'; VD.ep = ''; VD.ms = 0;
+  if (R.stab) R.stab.setExclusions([]);
+  toast('Загрузка детектора: ' + (engine === 'yolo' ? 'YOLOv8n (первый раз — до минуты)…' : 'MediaPipe…'), 4000);
+  vdLoad().then(() => { if (VD.st === 'ready') toast('Детектор: ' + vdName(), 2500); });
 }
 async function vdWait(ms) { const t0 = performance.now(); while (VD.st === 'loading' && performance.now() - t0 < ms) await wait(50); }
 async function vdWarm(w, h) {   // 2–3 холостых detectForVideo на пустом холсте такого же размера, как рабочие кадры
@@ -2827,6 +2914,8 @@ function switchRow(label, sub, checked, onChange) {
 }
 function openSettings() {
   const c = el('div', { class: 'sets' });
+  const eng = CONFIG.stab.detect.engine, engSub = el('small', { text: vdName() }), engBtn = (id, label) => el('button', { class: 'btn' + (eng === id ? ' on' : ''), type: 'button', onclick: () => { vdSwitch(id); closeSheet(); } }, label);
+  c.append(el('div', { class: 'swrow' }, el('span', { class: 'swt' }, el('b', { text: 'Детектор машин' }), engSub), el('span', { class: 'segd' }, engBtn('mediapipe', 'MediaPipe'), engBtn('yolo', 'YOLOv8n'))));
   c.append(
     switchRow('Отладка', 'маска движения, блобы, нижние кромки, dy, fps', S.debug, v => { S.debug = v; redraw(); }),
     switchRow('Не гасить экран', 'wake lock во время замера', S.wake, v => { S.wake = v; if (R.running) { if (v) wakeOn(); else wakeOff(); } }));
@@ -2838,7 +2927,7 @@ function openSettings() {
     el('button', { class: 'btn', type: 'button', onclick: exportLog }, '⬇ Журнал треков'),
     el('button', { class: 'btn danger', type: 'button', onclick: () => { if (!S.passes.length || confirm('Очистить список проездов и статистику?')) { clearPasses(); toast('Статистика очищена.'); } } }, 'Очистить статистику'));
   c.append(acts);
-  c.append(el('p', { class: 'fine', text: 'Скоростемер даёт ориентировочную оценку скорости (около ±10 %). Это не измерение для штрафов, судов и других официальных целей. Всё считается на устройстве, видео никуда не отправляется. Единственный сетевой запрос — по кнопке «Определить по GPS»: твои координаты уходят в Overpass API (OpenStreetMap).' }));
+  c.append(el('p', { class: 'fine', text: 'Скоростемер даёт ориентировочную оценку скорости (около ±10 %). Это не измерение для штрафов, судов и других официальных целей. Всё считается на устройстве. Сеть нужна для подгрузки библиотек и моделей детектора (CDN, один раз) и для кнопки «Определить по GPS»: координаты уходят в Overpass API (OpenStreetMap).' }));
   openSheet('Настройки', c);
 }
 $('btnGear').addEventListener('click', openSettings);
@@ -3491,6 +3580,7 @@ function init() {
   else if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) toast('Этот браузер не даёт доступ к камере. Можно работать с видеофайлом.', 6000);
 }
 init();
+try { const e = new URLSearchParams(location.search).get('det') || localStorage.getItem('ss_engine'); if (e === 'yolo' || e === 'mediapipe') CONFIG.stab.detect.engine = e; } catch (_) {}
 vdLoad();   // детектор машин грузится в фоне; пока не готов — стабилизация работает как раньше
 /* ==== APP:END ==== */
 
