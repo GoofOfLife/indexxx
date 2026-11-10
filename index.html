@@ -122,7 +122,7 @@ input[type=text],select{width:100%;min-height:48px;border-radius:12px;border:1px
 .sc{background:var(--panel2);border-radius:12px;padding:8px 4px;text-align:center;display:flex;flex-direction:column}
 .sc b{font-size:19px;font-variant-numeric:tabular-nums}
 .sc small{font-size:10.5px;color:var(--mut)}
-.prow{display:grid;grid-template-columns:78px 40px 26px 1fr 28px;align-items:center;padding:9px 6px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+.prow{display:grid;grid-template-columns:78px 40px 26px 1fr auto;align-items:center;padding:9px 6px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
 .prow.hasSnap{cursor:pointer}
 .pk{font-size:18px;text-align:left}
 .pt{color:var(--mut);font-size:14px}
@@ -158,7 +158,24 @@ body.running #toast{bottom:calc(env(safe-area-inset-bottom) + 74px)}
 }
 @media (max-width:480px){#dots{display:none}}
 @media (max-width:480px){.chip{padding:5px 9px;min-height:36px;font-size:12.5px}.chip b{font-size:15px}.hrow{gap:5px}}
-@media (max-width:380px){.chip{padding:5px 7px}.prow{grid-template-columns:70px 34px 24px 1fr 24px}}
+@media (max-width:380px){.chip{padding:5px 7px}.prow{grid-template-columns:70px 34px 24px 1fr auto}}
+.dtabs{display:flex;gap:6px}
+.dtab{flex:1;min-height:40px;border-radius:10px;border:1px solid var(--line);background:var(--panel2);font-weight:700;font-size:14px;color:var(--mut)}
+.dtab.on{color:var(--tx);box-shadow:0 0 0 1px var(--acc) inset}
+.dtab.v.on{box-shadow:0 0 0 1px #ff7a59 inset}
+#vpane{display:flex;flex-direction:column}
+.vrow{display:grid;grid-template-columns:64px 1fr auto;gap:10px;align-items:center;padding:8px 6px;border-bottom:1px solid var(--line);cursor:pointer;font-variant-numeric:tabular-nums}
+.vth{width:64px;height:48px;border-radius:8px;object-fit:cover;background:#000;display:block}
+.vth.none{display:flex;align-items:center;justify-content:center;color:var(--mut);font-size:11px;background:var(--panel2)}
+.vk{font-size:18px;font-weight:800;color:#ff7a59}
+.vm{font-size:12px;color:var(--mut)}
+.vsrc{font-size:11.5px;color:var(--mut);text-align:right;max-width:34vw}
+.vdet{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:8px 0}
+.vdet div{background:var(--panel2);border-radius:10px;padding:7px 9px}
+.vdet b{display:block;font-size:16px}
+.vdet small{color:var(--mut);font-size:11px}
+.plate{font:800 20px ui-monospace,Menlo,Consolas,monospace;letter-spacing:2px;padding:6px 10px;border-radius:8px;background:#f2f2f2;color:#111;display:inline-block}
+.snap .row{margin:6px 0}
 </style>
 </head>
 <body>
@@ -194,7 +211,7 @@ body.running #toast{bottom:calc(env(safe-area-inset-bottom) + 74px)}
     </div>
     <div id="drawer" hidden>
       <button id="drawerBar" type="button"><span id="drawerSum">Проезды: пока нет</span><i>▲</i></button>
-      <div id="drawerBody"><div id="stats"></div><div id="plist"></div></div>
+      <div id="drawerBody"><div id="dtabs" class="dtabs" hidden></div><div id="stats"></div><div id="plist"></div><div id="vpane" hidden></div></div>
     </div>
   </div>
   <section id="panel">
@@ -217,6 +234,7 @@ body.running #toast{bottom:calc(env(safe-area-inset-bottom) + 74px)}
  *   Калибровка идёт по строкам опорной колонки XR (gateVr); cal.til = tiltOf(g) — семейство наклонных линий; v трекера = tiltV(til, x, y).
  * Функции: GS(i), fixSet, cloneSet, recalc, calsOk, lanePre, lanePath, laneTabs, packSet/readSet, analysisH;
  *   CORE: calAt/sOfV/vOfS(cals, …, индекс полосы), wlsLine; Tracker._sample/_live (σ точки, окно, фильтр).
+ * Нарушители (необязательный шаг 6): S.viol {on, over, distMode, distM, strip, ocr, gates(2)}, S.vlist (записи), CONFIG.viol; блок «Высокие нарушения» — FastGates (D÷t), violGrab/violPhoto, vcVote/vcClass (тип ТС по классу рамки детектора), ANPR (OCR отдельно).
  * CFG.* из ТЗ = CONFIG.track.*: edgeSigmaPx, maxRelErr, showErr, minWinSec, winMaxSec, maxAccel, maxPxMeters.
  */
 /* ==== CORE:BEGIN ==== */
@@ -376,7 +394,16 @@ const CONFIG = {
   // ---------- Лимит, цвета ----------
   limit: { default: 50, presets: [20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130], yellowOver: 10 },
   // ---------- Интерфейс ----------
-  ui: { bubbleHoldSec: 0.5, tagGraceSec: 0.5, loupeZoom: 4, loupeSize: 132, fpsWarn: 20, hudEveryMs: 250, handle: 30, snapMaxW: 960, snapKeep: 40, maxZoomPx: 6 }
+  ui: { bubbleHoldSec: 0.5, tagGraceSec: 0.5, loupeZoom: 4, loupeSize: 132, fpsWarn: 20, hudEveryMs: 250, handle: 30, snapMaxW: 960, snapKeep: 40, maxZoomPx: 6 },
+  // ---------- Высокие нарушения (отдельная необязательная система: 2 ворота, D÷t, фото) ----------
+  viol: {
+    minOver: 20, defOver: 30, maxOver: 150,   // превышение над лимитом, км/ч: порог не ниже minOver
+    defDistM: 20, minDistM: 3, warnDistM: 8,  // расстояние между воротами, м
+    maxSpeedKmh: 300, minT: 0.03, maxGapSec: 0.2,   // потолок правдоподобной скорости; мин. время между воротами; макс. дыра между кадрами трека
+    keep: 60, preMargin: 8,                   // сколько нарушителей держать с фото; фото «заранее» — когда live-скорость ≥ порог − preMargin
+    snapMaxSide: 1920, jpeg: 0.86, cropMargin: 0.12, cropMaxSide: 1280,   // кадр целиком / вырез машины
+    tessUrl: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js'   // OCR номеров (грузится только при первом запуске)
+  }
 };
 
 const clamp = (v, a, b) => (v < a ? a : (v > b ? b : v));
@@ -847,13 +874,13 @@ function vdWorkerSrc() {   // тело воркера (уходит в Blob): с
       } else if (m.type === 'detect') {
         const t0 = performance.now(); let r;
         try { r = det.detectForVideo(m.bmp, nts()); } finally { m.bmp.close(); }
-        self.postMessage({ type: 'res', id: m.id, w: m.w, h: m.h, ms: performance.now() - t0, boxes: (r.detections || []).filter(d => d.boundingBox).map(d => { const b = d.boundingBox; return [b.originX, b.originY, b.width, b.height, d.categories && d.categories[0] ? d.categories[0].score : 1]; }) });
+        self.postMessage({ type: 'res', id: m.id, w: m.w, h: m.h, ms: performance.now() - t0, boxes: (r.detections || []).filter(d => d.boundingBox).map(d => { const b = d.boundingBox; const cn = d.categories && d.categories[0] ? d.categories[0].categoryName : ''; return [b.originX, b.originY, b.width, b.height, d.categories && d.categories[0] ? d.categories[0].score : 1, cn === 'car' ? 0 : cn === 'motorcycle' ? 1 : cn === 'bus' ? 2 : cn === 'truck' ? 3 : -1]; }) });
       }
     } catch (x) { self.postMessage({ type: 'err', id: m.id, err: String(x) }); }
   };
 }
 function vdWorkerSrcYolo() {   // воркер YOLOv8n: onnxruntime-web (WebGPU → WASM), вход 640×640 с letterbox, выход [1,84,8400]; протокол и формат ответа как у MediaPipe-воркера
-  const S = 640, NA = 8400, COCO = { car: 2, motorcycle: 3, bus: 5, truck: 7 };
+  const S = 640, NA = 8400, COCO = { car: 2, motorcycle: 3, bus: 5, truck: 7 }, CODE = { 2: 0, 3: 1, 5: 2, 7: 3 };   // CODE: COCO id → 0 легковой · 1 мотоцикл · 2 автобус · 3 грузовой
   let ort = null, sess = null, g = null, buf = null, ids = [], cfg = null, ep = '';
   const hex = b => Array.from(new Uint8Array(b), x => x.toString(16).padStart(2, '0')).join('');
   const loadModel = async s => {
@@ -872,11 +899,11 @@ function vdWorkerSrcYolo() {   // воркер YOLOv8n: onnxruntime-web (WebGPU 
   const decode = (o, p, w, h) => {   // лучший класс из «машинных» на каждый якорь → порог scoreLow → NMS без учёта класса
     const cand = [];
     for (let i = 0; i < NA; i++) {
-      let best = 0;
-      for (let k = 0; k < ids.length; k++) { const v = o[(4 + ids[k]) * NA + i]; if (v > best) best = v; }
+      let best = 0, bk = 0;
+      for (let k = 0; k < ids.length; k++) { const v = o[(4 + ids[k]) * NA + i]; if (v > best) { best = v; bk = k; } }
       if (best < cfg.scoreLow) continue;
       const cx = o[i], cy = o[NA + i], bw = o[2 * NA + i], bh = o[3 * NA + i];
-      cand.push({ x0: Math.max(0, (cx - bw / 2 - p.dx) / p.k), y0: Math.max(0, (cy - bh / 2 - p.dy) / p.k), x1: Math.min(w, (cx + bw / 2 - p.dx) / p.k), y1: Math.min(h, (cy + bh / 2 - p.dy) / p.k), s: best });
+      cand.push({ x0: Math.max(0, (cx - bw / 2 - p.dx) / p.k), y0: Math.max(0, (cy - bh / 2 - p.dy) / p.k), x1: Math.min(w, (cx + bw / 2 - p.dx) / p.k), y1: Math.min(h, (cy + bh / 2 - p.dy) / p.k), s: best, k: bk });
     }
     cand.sort((a, b) => b.s - a.s);
     const keep = [];
@@ -888,7 +915,7 @@ function vdWorkerSrcYolo() {   // воркер YOLOv8n: onnxruntime-web (WebGPU 
       }
       if (ok) { keep.push(c); if (keep.length >= cfg.max) break; }
     }
-    return keep.map(c => [c.x0, c.y0, c.x1 - c.x0, c.y1 - c.y0, c.s >= cfg.score ? 1 : 0]);   // 5-й элемент: 1 — уверенная рамка, 0 — слабая (ByteTrack-lite)
+    return keep.map(c => [c.x0, c.y0, c.x1 - c.x0, c.y1 - c.y0, c.s >= cfg.score ? 1 : 0, CODE[ids[c.k]]]);   // 5-й элемент: 1 — уверенная рамка, 0 — слабая (ByteTrack-lite)
   };
   const run = async () => { const out = await sess.run({ [sess.inputNames[0]]: new ort.Tensor('float32', buf, [1, 3, S, S]) }); return out[sess.outputNames[0]].data; };
   self.onmessage = async e => {
@@ -1025,15 +1052,16 @@ const vdBmpSize = (vw, vh) => { const m = CONFIG.stab.detect.bmpMax, k = m > 0 ?
 function vdBoxes(m, cr, low) {   // рамки воркера → доли ПОЛНОГО кадра [x0, y0, x1, y1] с запасом pad; cr — обрезка по ширине, с которой кадр ушёл в детектор
   const pad = CONFIG.stab.detect.pad, a = cr ? cr.fx0 : 0, k = cr ? cr.fx1 - cr.fx0 : 1;
   const sc = CONFIG.stab.detect.score;
-  return m.boxes.filter(b => low ? b[4] < sc : !(b[4] < sc)).map(([x, y, w, h]) => [a + k * (x - w * pad) / m.w, (y - h * pad) / m.h, a + k * (x + w * (1 + pad)) / m.w, (y + h * (1 + pad)) / m.h]);
+  return m.boxes.filter(b => low ? b[4] < sc : !(b[4] < sc)).map(([x, y, w, h, s, c]) => [a + k * (x - w * pad) / m.w, (y - h * pad) / m.h, a + k * (x + w * (1 + pad)) / m.w, (y + h * (1 + pad)) / m.h, c]);
 }
 function vdSet(bx, p, pivot, t, stab, lowBx) {   // рамки (координаты анализа кадра t, поза p) → координаты калибровки; VD.t — время кадра, а не прихода ответа
-  VD.cal = bx.map(r => { const q = [warpInv(p, pivot, r.x0, r.y0), warpInv(p, pivot, r.x1, r.y0), warpInv(p, pivot, r.x0, r.y1), warpInv(p, pivot, r.x1, r.y1)]; return { x0: Math.min(...q.map(a => a[0])), x1: Math.max(...q.map(a => a[0])), y0: Math.min(...q.map(a => a[1])), y1: Math.max(...q.map(a => a[1])) }; });
-  VD.low = (lowBx || []).map(r => { const q = [warpInv(p, pivot, r.x0, r.y0), warpInv(p, pivot, r.x1, r.y0), warpInv(p, pivot, r.x0, r.y1), warpInv(p, pivot, r.x1, r.y1)]; return { x0: Math.min(...q.map(a => a[0])), x1: Math.max(...q.map(a => a[0])), y0: Math.min(...q.map(a => a[1])), y1: Math.max(...q.map(a => a[1])) }; });
+  VD.cal = bx.map(r => { const q = [warpInv(p, pivot, r.x0, r.y0), warpInv(p, pivot, r.x1, r.y0), warpInv(p, pivot, r.x0, r.y1), warpInv(p, pivot, r.x1, r.y1)]; return { x0: Math.min(...q.map(a => a[0])), x1: Math.max(...q.map(a => a[0])), y0: Math.min(...q.map(a => a[1])), y1: Math.max(...q.map(a => a[1])), c: r.c }; });
+  VD.low = (lowBx || []).map(r => { const q = [warpInv(p, pivot, r.x0, r.y0), warpInv(p, pivot, r.x1, r.y0), warpInv(p, pivot, r.x0, r.y1), warpInv(p, pivot, r.x1, r.y1)]; return { x0: Math.min(...q.map(a => a[0])), x1: Math.max(...q.map(a => a[0])), y0: Math.min(...q.map(a => a[1])), y1: Math.max(...q.map(a => a[1])), c: r.c }; });
   VD.t = t; stab.setExclusions(VD.cal);
 }
 function vdApply(m, rq) {   // ответ воркера: поза и время — те, что были при отправке кадра
-  vdSet(vdBoxes(m, rq.crop).map(r => ({ x0: r[0] * rq.aw, y0: r[1] * rq.ah, x1: r[2] * rq.aw, y1: r[3] * rq.ah })), rq.p, rq.pivot, rq.t, rq.stab, vdBoxes(m, rq.crop, true).map(r => ({ x0: r[0] * rq.aw, y0: r[1] * rq.ah, x1: r[2] * rq.aw, y1: r[3] * rq.ah })));
+  const rect = r => ({ x0: r[0] * rq.aw, y0: r[1] * rq.ah, x1: r[2] * rq.aw, y1: r[3] * rq.ah, c: r[4] });
+  vdSet(vdBoxes(m, rq.crop).map(rect), rq.p, rq.pivot, rq.t, rq.stab, vdBoxes(m, rq.crop, true).map(rect));
   VD.ms = 0.8 * VD.ms + 0.2 * m.ms; VD.lag = 0.8 * VD.lag + 0.2 * (performance.now() - rq.wall);
 }
 async function vdCalBoxes(cv) {   // воркер: рамки машин кадра калибровки (доли кадра) для vdMaskCars
@@ -1053,7 +1081,7 @@ function vdRun(src, sx, sy) {   // основной поток: src — video и
   for (const d of res.detections || []) {
     const b = d.boundingBox; if (!b) continue;
     const px = b.width * c.pad, py = b.height * c.pad, sc = d.categories && d.categories[0] ? d.categories[0].score : 1;
-    (sc < c.score ? out.low : out).push({ x0: (b.originX - px) * sx, y0: (b.originY - py) * sy, x1: (b.originX + b.width + px) * sx, y1: (b.originY + b.height + py) * sy });
+    (sc < c.score ? out.low : out).push({ x0: (b.originX - px) * sx, y0: (b.originY - py) * sy, x1: (b.originX + b.width + px) * sx, y1: (b.originY + b.height + py) * sy, c: vcCode(d.categories && d.categories[0] && d.categories[0].categoryName) });
   }
   VD.ms = 0.8 * VD.ms + 0.2 * (performance.now() - t0);
   return out;
@@ -1963,7 +1991,10 @@ const S = {
   limit: CONFIG.limit.default, limitSrc: '',
   place: '', fromStart: true, profAspect: null, profName: '',
   calib: null, calibs: [], debug: false, wake: true, levelOn: false,
-  passes: [], nPass: 0
+  passes: [], nPass: 0,
+  viol: { on: false, over: CONFIG.viol.defOver, distMode: 'auto', distM: CONFIG.viol.defDistM, strip: true, ocr: false,
+    gates: { n: 2, v: [0.72, 0.52], aim: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5], rot: [0, 0, 0, 0, 0, 0], mode: 'manual', markM: 6, steps: [1, 1, 1, 1, 1], meters: [20, 6, 6, 6, 6], sel: 0 } },
+  vlist: [], nViol: 0, dtab: 'pass'   // нарушители: список записей, счётчик, вкладка нижнего меню (pass | viol)
 };
 const R = { running: false, paused: false };      // состояние замера
 const V = { w: 0, h: 0, k: 1, tx: 0, ty: 0, kFit: 1, maxK: 6 };   // отображение кадра на сцене
@@ -2092,7 +2123,8 @@ function drawWizard() {
   if (S.step === 2) { drawLaneLines(true); drawGates(false); }
   else if (S.step === 3) { drawGates(true); drawLaneLines(false); }
   else if (S.step === 4) { drawGates(true); drawLaneLines(true); }
-  else if (S.step === 5) { drawCheck(); }
+  else if (S.step === ST_VIOL) { drawGates(true); drawLaneLines(true); if (S.viol.on) drawGateSet(S.viol.gates, false, 1, VIOL_COL, violLbl); }
+  else if (S.step === ST_CHECK) { drawCheck(); }
 }
 function drawEmptyHint() {
   ctx.fillStyle = '#6b7684'; ctx.font = '500 16px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -2114,25 +2146,25 @@ function drawGates(faint) {
   if (G.perLane) for (let k = 0; k < S.lanes.n; k++) if (k !== G.lane) drawGateSet(GS(k), true, 0.22);   // остальные полосы приглушены
   drawGateSet(GS(), faint, faint ? 0.45 : 1);
 }
-function drawGateSet(g, faint, alpha) {
-  const ss = gateS(g), shown = [];
+function drawGateSet(g, faint, alpha, col, labFn) {
+  const C = col || GATE_COL, ss = labFn ? null : gateS(g), shown = [];
   const order = []; for (let i = 0; i < g.n; i++) order.push(i);
   order.sort((p, q) => (q === g.sel) - (p === g.sel));            // подпись выбранных ворот — в приоритете
   for (const i of order) {
     const L = gateLine(g, i), y = L.at(0), sel = !faint && i === g.sel;
     ctx.globalAlpha = alpha;
-    ctx.strokeStyle = sel ? '#ffffff' : GATE_COL; ctx.lineWidth = sel ? 2 : 1.4; ctx.setLineDash([]);
+    ctx.strokeStyle = sel ? '#ffffff' : C; ctx.lineWidth = sel ? 2 : 1.4; ctx.setLineDash([]);
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(SW, L.at(SW)); ctx.stroke();
     if (!faint) {
-      if (shown.every(v => Math.abs(v - y) >= 22)) { shown.push(y); drawLabel((i + 1) + ' · ' + fmt(ss[i], ss[i] % 1 ? 1 : 0) + ' м', 6, y - 16, sel ? '#fff' : GATE_COL); }
+      if (shown.every(v => Math.abs(v - y) >= 22)) { shown.push(y); drawLabel(labFn ? labFn(i) : (i + 1) + ' · ' + fmt(ss[i], ss[i] % 1 ? 1 : 0) + ' м', 6, y - 16, sel ? '#fff' : C); }
       // ручка у правого края (сидит на наклонной линии)
       const hx = SW - 26, hy = L.at(hx);
-      ctx.fillStyle = sel ? '#ffffff' : GATE_COL; roundRect(hx - 22, hy - 15, 44, 30, 9); ctx.fill();
-      ctx.fillStyle = '#0b0d10'; ctx.font = '700 15px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(String(i + 1), hx, hy + 1);
+      ctx.fillStyle = sel ? '#ffffff' : C; roundRect(hx - 22, hy - 15, 44, 30, 9); ctx.fill();
+      ctx.fillStyle = '#0b0d10'; ctx.font = '700 15px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(labFn ? 'Н' + (i + 1) : String(i + 1), hx, hy + 1);
       ctx.strokeStyle = '#0b0d10'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(hx - 15, hy - 6); ctx.lineTo(hx - 15, hy + 6); ctx.moveTo(hx + 15, hy - 6); ctx.lineTo(hx + 15, hy + 6); ctx.stroke();
       // кольцо наведения — оно же точка поворота
       const ax = L.xp, ay = L.yp;
-      ctx.strokeStyle = sel ? '#ffffff' : GATE_COL; ctx.lineWidth = 2;
+      ctx.strokeStyle = sel ? '#ffffff' : C; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(ax, ay, 11, 0, 7); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(ax - 5, ay); ctx.lineTo(ax + 5, ay); ctx.moveTo(ax, ay - 5); ctx.lineTo(ax, ay + 5); ctx.stroke();
       if (sel) {   // ручка поворота выбранных ворот
@@ -2184,6 +2216,7 @@ function drawLaneLines(faint) {
 function drawCheck() {
   const cal = S.calib;
   drawLaneLines(true);
+  if (S.viol.on) drawGateSet(S.viol.gates, true, 0.9, VIOL_COL);
   if (!cal || !cal.ok) { drawGates(true); return; }
   const ss = gateS(), sLast = ss[ss.length - 1];
   const sLo = Math.floor(cal.sBottom / CONFIG.calib.rulerStepM) * CONFIG.calib.rulerStepM, shown = [];
@@ -2239,8 +2272,9 @@ const ptrs = new Map();
 let drag = null, pan = null, pinch = null;
 function evPt(e) { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
 
+const curSet = () => (S.step === ST_VIOL ? S.viol.gates : GS());   // набор ворот, который сейчас двигаем: нарушений — на своём шаге, иначе основной
 function hitTest(p) {
-  const hr = CONFIG.ui.handle, g = GS();
+  const hr = CONFIG.ui.handle, g = curSet();
   if (S.step === 3) {
     const b = sortedBounds();
     let best = null, bd = hr * hr * 1.6;
@@ -2250,7 +2284,7 @@ function hitTest(p) {
     } });
     return best;
   }
-  if (S.step === 2) {
+  if (S.step === 2 || (S.step === ST_VIOL && S.viol.on)) {
     // выбираем ближайшую ручку (кольцо наведения или ручку у края); у выбранных ворот небольшое преимущество
     let best = null, bd = Infinity;
     { const kn = knobPos(g, g.sel, gateLine(g, g.sel)); if (Math.hypot(kn.x - p.x, kn.y - p.y) < hr * 0.9) return { type: 'rot', idx: g.sel, side: kn.side }; }   // ручка поворота выбранных ворот
@@ -2267,7 +2301,7 @@ function hitTest(p) {
 }
 function applyDrag(p) {
   if (!drag) return;
-  const g = GS();
+  const g = curSet();
   if (drag.type === 'gate' || drag.type === 'aim') {
     const i = drag.idx;
     let v = iy(p.y + drag.oy);
@@ -2292,6 +2326,7 @@ function applyDrag(p) {
 function onGeometryChanged() {
   if (S.step === 2) { recalc(); if (typeof updateCalStatus === 'function') updateCalStatus(); }
   else if (S.step === 3 && typeof updateLaneStatus === 'function') updateLaneStatus();
+  else if (S.step === ST_VIOL) updateViolStatus();
   redraw();
 }
 function startPinch() {
@@ -2318,7 +2353,7 @@ cv.addEventListener('pointerdown', e => {
   const hit = hitTest(p);
   if (hit) {
     drag = hit;
-    if (hit.type === 'gate' || hit.type === 'aim') { GS().sel = hit.idx; if (typeof updateNudge === 'function') updateNudge(); }
+    if (hit.type === 'gate' || hit.type === 'aim') { curSet().sel = hit.idx; if (typeof updateNudge === 'function') updateNudge(); }
     applyDrag(p);
   } else pan = { x: p.x, y: p.y, tx: V.tx, ty: V.ty };
 });
@@ -2348,14 +2383,14 @@ cv.addEventListener('wheel', e => {
 $('btnFit').addEventListener('click', () => { fitView(false); redraw(); });
 
 function rotGate(d) {   // поворот выбранных ворот: d — шаг, градусы; null — в 0°; 'all' — угол выбранных всем воротам
-  const g = GS(), i = g.sel;
+  const g = curSet(), i = g.sel;
   if (d === 'all') g.rot.fill(g.rot[i]); else g.rot[i] = d === null ? 0 : clamp(gRot(g, i) + d * Math.PI / 180, -0.7, 0.7);
   if (S.frozen) showLoupe(g.aim[i], g.v[i], SW - 26, 0, 'gate', 0, g.rot[i]);
   clearTimeout(nudgeGate.t); nudgeGate.t = setTimeout(hideLoupe, 900);
   updateNudge(); onGeometryChanged();
 }
 function nudgeGate(dir) {
-  const g = GS(), i = g.sel;
+  const g = curSet(), i = g.sel;
   const step = 1 / (S.frozen ? S.frozen.h : 1000);
   const lo = (i + 1 < g.n ? g.v[i + 1] : 0.005) + CONFIG.calib.minGap, hi = (i > 0 ? g.v[i - 1] : 0.995) - CONFIG.calib.minGap;
   g.v[i] = clamp(g.v[i] + dir * step, lo, Math.max(lo, hi));
@@ -2451,8 +2486,10 @@ const STEPS = [
   { name: 'Ворота и расстояния', hint: 'Совмести линии с землёй в точках с известным расстоянием. Все точки — на одной линии вдоль дороги (штрихи разметки, бордюр, свои метки).' },
   { name: 'Границы полос', hint: 'Протяни линии по границам полос — их на одну больше, чем полос. Потяни за точки A и B каждой линии.' },
   { name: 'Лимит скорости', hint: 'Выбери лимит: от него зависит цвет меток. Можно определить по GPS, но данные OSM бывают неточными.' },
+  { name: 'Нарушители (необязательно)', hint: 'Необязательно. Две линии поперёк дороги: машина, проехавшая их быстрее «лимит + превышение», попадает в «Нарушители» с фото. Ставь линии там, где машины уже хорошо видны. Остальных система игнорирует.' },
   { name: 'Проверка', hint: 'Линейка поверх кадра: метки через каждые 5 м должны совпасть с реальными расстояниями на дороге. Потом «Старт».' }
 ];
+const ST_VIOL = 5, ST_CHECK = 6;   // индексы шагов мастера
 let fileUi = null;
 video.addEventListener('timeupdate', () => {
   if (fileUi && fileUi.rng.isConnected) { if (document.activeElement !== fileUi.rng) fileUi.rng.value = video.currentTime; fileUi.lab.textContent = tstr(video.currentTime) + ' / ' + tstr(S.fileDur); }
@@ -2585,8 +2622,9 @@ function buildGates(box) {
   updateNudge(); updateCalStatus();
 }
 function updateNudge() {
-  const l = $('nudgeLbl'); if (l) l.textContent = 'Выбрана линия: ворота ' + (GS().sel + 1) + ' · сдвиг на 1 px кадра';
-  const r = $('rotLbl'); if (r) r.textContent = 'Наклон ворот ' + (GS().sel + 1) + ': ' + fmt(gRot(GS(), GS().sel) * 57.2958, 1) + '° · тяни ↻ на кадре';
+  const g = curSet(), nm = S.step === ST_VIOL ? 'Н' : 'ворота ';
+  const l = $('nudgeLbl'); if (l) l.textContent = 'Выбрана линия: ' + nm + (g.sel + 1) + ' · сдвиг на 1 px кадра';
+  const r = $('rotLbl'); if (r) r.textContent = 'Наклон ' + nm + (g.sel + 1) + ': ' + fmt(gRot(g, g.sel) * 57.2958, 1) + '° · тяни ↻ на кадре';
 }
 function updateCalStatus() {
   const box = $('calStatus'); if (!box) return;
@@ -2706,16 +2744,28 @@ function canNext() {
     case 2: { recalc(); return calsOk(); }
     case 3: { recalc(); const v = validateLanes(); return v.ok ? { ok: true } : { ok: false, msg: v.msg }; }
     case 4: return S.limit >= 5 && S.limit <= 200 ? { ok: true } : { ok: false, msg: 'Лимит должен быть от 5 до 200 км/ч.' };
-    case 5: { recalc(); return calsOk(); }
+    case ST_VIOL: {
+      const V = S.viol; if (!V.on) return { ok: true };
+      recalc();
+      if (V.distMode === 'auto') {
+        const A = calsOk(); if (!A.ok) return A;
+        if (!violZoneOk()) return { ok: false, msg: 'Н1/Н2 вне зоны калибровки: сдвинь их в зону или задай расстояние вручную.' };
+      }
+      const D = violDist();
+      if (!(D >= CONFIG.viol.minDistM)) return { ok: false, msg: 'Расстояние между воротами нарушений — не меньше ' + CONFIG.viol.minDistM + ' м.' };
+      if (Math.abs(V.gates.v[0] - V.gates.v[1]) < 0.02) return { ok: false, msg: 'Н1 и Н2 почти совпадают — раздвинь линии.' };
+      return { ok: true };
+    }
+    case ST_CHECK: { recalc(); return calsOk(); }
   }
   return { ok: true };
 }
 function laneTabs() {      // вкладки П1/П2/П3 над кадром: шаги «Ворота» и «Проверка» в режиме «свои ворота»
-  const G = S.gates, tb = $('laneTabs'), show = G.perLane && S.showFrozen && (S.step === 2 || S.step === 5);
+  const G = S.gates, tb = $('laneTabs'), show = G.perLane && S.showFrozen && (S.step === 2 || S.step === ST_CHECK);
   tb.hidden = !show; tb.replaceChildren();
   if (!show) return;
   const lab = []; for (let i = 0; i < S.lanes.n; i++) lab.push('П' + (i + 1));
-  tb.append(seg(lab, G.lane, i => { G.lane = i; if (S.step === 5) { recalc(); laneTabs(); redraw(); } else renderStep(true); }));
+  tb.append(seg(lab, G.lane, i => { G.lane = i; if (S.step === ST_CHECK) { recalc(); laneTabs(); redraw(); } else renderStep(true); }));
 }
 function renderStep(keepStage) {
   const st = STEPS[S.step];
@@ -2726,9 +2776,9 @@ function renderStep(keepStage) {
   const body = $('body'); body.replaceChildren();
   S.showFrozen = !!S.frozen && S.step >= 1;
   fileUi = null;
-  [buildSource, buildFreeze, buildGates, buildLanes, buildLimit, buildCheck][S.step](body);
+  [buildSource, buildFreeze, buildGates, buildLanes, buildLimit, buildViol, buildCheck][S.step](body);
   $('btnBack').hidden = S.step === 0;
-  const nx = $('btnNext'); nx.textContent = S.step === 5 ? '▶ Старт' : 'Далее'; nx.classList.toggle('go', S.step === 5);
+  const nx = $('btnNext'); nx.textContent = S.step === ST_CHECK ? '▶ Старт' : 'Далее'; nx.classList.toggle('go', S.step === ST_CHECK);
   $('btnFit').hidden = !S.showFrozen;
   const wasLive = !S.showFrozen;
   video.style.visibility = S.srcKind && wasLive ? 'visible' : 'hidden';
@@ -2742,7 +2792,7 @@ function renderStep(keepStage) {
 function goNext() {
   const c = canNext();
   if (!c.ok) { toast(c.msg); return; }
-  if (S.step === 5) { startRun(); return; }
+  if (S.step === ST_CHECK) { startRun(); return; }
   S.step++;
   if (S.step === 2) { ensureDefaults(); recalc(); }
   if (S.step === 3) recalc();
@@ -2765,7 +2815,7 @@ function snapshotProfile(name) {
     name, saved: Date.now(), aspect: S.frozen ? S.frozen.w / S.frozen.h : S.profAspect,
     gates: Object.assign(packSet(g), { perLane: !!g.perLane, L: g.L.slice(0, L.n).map(packSet) }),
     lanes: { n: L.n, b: L.b.map(l => ({ x1: l.x1, y1: l.y1, x2: l.x2, y2: l.y2 })), names: L.names.slice(0, 3), types: L.types.slice(0, 3) },
-    limit: S.limit
+    limit: S.limit, viol: packViol()
   };
 }
 function saveProfile(name) { const all = lsGet(); all[name] = snapshotProfile(name); return lsSet(all); }
@@ -2791,6 +2841,7 @@ function loadProfile(name) {
     L.names = (pl.names || []).slice(0, 3).map(String); while (L.names.length < 3) L.names.push('Полоса ' + (L.names.length + 1));
     L.types = (pl.types || []).slice(0, 3).map(t => (TYPE_NAMES[t] ? t : 'normal')); while (L.types.length < 3) L.types.push('normal');
     if (p.limit >= 5 && p.limit <= 200) S.limit = p.limit | 0;
+    readViol(p.viol);
     S.place = name; S.profAspect = p.aspect || null;
     ensureDefaults();
     if (S.frozen && p.aspect && Math.abs(S.frozen.w / S.frozen.h / p.aspect - 1) > 0.05) { resetPositions(); S.profAspect = null; toast('Профиль снят в другой ориентации — числа загружены, точки расставь заново.', 5000); }
@@ -2918,13 +2969,16 @@ function openSettings() {
   c.append(el('div', { class: 'swrow' }, el('span', { class: 'swt' }, el('b', { text: 'Детектор машин' }), engSub), el('span', { class: 'segd' }, engBtn('mediapipe', 'MediaPipe'), engBtn('yolo', 'YOLOv8n'))));
   c.append(
     switchRow('Отладка', 'маска движения, блобы, нижние кромки, dy, fps', S.debug, v => { S.debug = v; redraw(); }),
-    switchRow('Не гасить экран', 'wake lock во время замера', S.wake, v => { S.wake = v; if (R.running) { if (v) wakeOn(); else wakeOff(); } }));
+    switchRow('Не гасить экран', 'wake lock во время замера', S.wake, v => { S.wake = v; if (R.running) { if (v) wakeOn(); else wakeOff(); } }),
+    switchRow('Распознавать номера (OCR)', 'экспериментально · для нарушителей · Tesseract.js подгружается из сети', S.viol.ocr, v => { S.viol.ocr = v; if (v) toast('OCR включён: библиотека загрузится при первом номере.', 3500); }));
   if (S.srcKind === 'camera' || !S.srcKind) c.append(el('div', { class: 'swrow' }, el('span', { class: 'swt' }, el('b', { text: 'Индикатор крена' }), el('small', { text: 'по датчикам телефона — для ровного удержания' })), levelButton()));
   const acts = el('div', { class: 'col' });
   if (S.mode === 'run') acts.append(el('button', { class: 'btn', type: 'button', onclick: () => { closeSheet(); reconfigure(); } }, '⚙ Перенастроить'));
   acts.append(
     el('button', { class: 'btn', type: 'button', onclick: exportCsv }, '⬇ Экспорт CSV'),
     el('button', { class: 'btn', type: 'button', onclick: exportLog }, '⬇ Журнал треков'),
+    el('button', { class: 'btn', type: 'button', onclick: exportViolCsv }, '⬇ Нарушители CSV'),
+    el('button', { class: 'btn', type: 'button', onclick: anprFromFile }, '🔎 Номер по фото…'),
     el('button', { class: 'btn danger', type: 'button', onclick: () => { if (!S.passes.length || confirm('Очистить список проездов и статистику?')) { clearPasses(); toast('Статистика очищена.'); } } }, 'Очистить статистику'));
   c.append(acts);
   c.append(el('p', { class: 'fine', text: 'Скоростемер даёт ориентировочную оценку скорости (около ±10 %). Это не измерение для штрафов, судов и других официальных целей. Всё считается на устройстве. Сеть нужна для подгрузки библиотек и моделей детектора (CDN, один раз) и для кнопки «Определить по GPS»: координаты уходят в Overpass API (OpenStreetMap).' }));
@@ -2936,8 +2990,9 @@ $('btnGear').addEventListener('click', openSettings);
 function clearPasses() { for (const p of S.passes) if (p.snap) { try { URL.revokeObjectURL(p.snap); } catch (_) {} } S.passes = []; renderDrawer(); updateHud(true); }
 function speedColor(kmh, limit) { return kmh <= limit ? OK_COL : (kmh <= limit + CONFIG.limit.yellowOver ? WARN_COL : BAD_COL); }
 function onPass(ps) {
-  const rec = { id: ++S.nPass, wall: ps.wall, lane: ps.lane, laneName: laneName(ps.lane), dir: ps.dir, kmh: ps.kmh, kmhMin: ps.kmhMin, kmhMax: ps.kmhMax, n: ps.n, limit: S.limit, snap: ps.snap || null, rel: ps.rel, path: ps.path, live: ps.live, gap: ps.gap || null, q: ps.rel <= 0.05 && ps.path >= 15 && ps.n >= 8 ? 'ok' : 'низкое' };
+  const rec = { id: ++S.nPass, wall: ps.wall, lane: ps.lane, laneName: laneName(ps.lane), dir: ps.dir, kmh: ps.kmh, kmhMin: ps.kmhMin, kmhMax: ps.kmhMax, n: ps.n, limit: S.limit, snap: ps.snap || null, rel: ps.rel, path: ps.path, live: ps.live, gap: ps.gap || null, q: ps.rel <= 0.05 && ps.path >= 15 && ps.n >= 8 ? 'ok' : 'низкое', cls: vcClass(ps.id), trackId: ps.id };
   S.passes.unshift(rec);
+  violFromMain(ps);
   while (S.passes.length > CONFIG.track.maxPasses) { const o = S.passes.pop(); if (o.snap) { try { URL.revokeObjectURL(o.snap); } catch (_) {} } }
   for (let i = CONFIG.ui.snapKeep; i < S.passes.length; i++) { const o = S.passes[i]; if (o.snap) { try { URL.revokeObjectURL(o.snap); } catch (_) {} o.snap = null; } }   // снимки хранятся только у последних проездов
   if (ps.blob && R.geo) {
@@ -2947,11 +3002,15 @@ function onPass(ps) {
   renderDrawer(); updateHud(true);
 }
 function renderDrawer() {
+  renderDtabs();
+  const vOn = S.dtab === 'viol';
+  $('stats').hidden = vOn; $('plist').hidden = vOn; $('vpane').hidden = !vOn;
+  if (vOn) { renderViolPane(); return; }
   const P = S.passes, n = P.length;
   let sum = 0, mx = 0, over = 0;
   for (const p of P) { sum += p.kmh; if (p.kmh > mx) mx = p.kmh; if (p.kmh > p.limit) over++; }
   $('drawerSum').textContent = n ? 'Проезды: ' + n + ' · ср. ' + fmt(sum / n) + ' · макс. ' + fmt(mx) + ' км/ч' : 'Проезды: пока нет';
-  $('drawerSum').textContent += cntSuffix();
+  $('drawerSum').textContent += violSuffix() + cntSuffix();
   const st = $('stats'); st.replaceChildren();
   const cell = (k, v) => el('div', { class: 'sc' }, el('b', { text: v }), el('small', { text: k }));
   st.append(cell('проездов', String(n)), cell('средняя, км/ч', n ? fmt(sum / n) : '—'), cell('максимум, км/ч', n ? fmt(mx) : '—'), cell('превышений', n ? fmt(100 * over / n) + ' %' : '—'), cell('близко', n ? String(P.filter(p => p.gap && p.gap.lvl === 2).length) : '—'));
@@ -2963,24 +3022,24 @@ function renderDrawer() {
       el('span', { class: 'pl', text: 'П' + p.lane }),
       el('span', { class: 'pd', text: p.dir < 0 ? '▼' : '▲', title: p.dir < 0 ? 'к камере' : 'от камеры' }),
       el('b', { class: 'pk', style: 'color:' + speedColor(p.kmh, p.limit), text: fmt(p.kmh) + ' км/ч' }),
-      el('span', { class: 'ps', title: 'σ ' + fmt(100 * p.rel, 1) + ' % · ' + p.n + ' точек · ' + fmt(p.path) + ' м', text: (p.q === 'ok' ? '' : '⚠ ') + (p.snap ? '📷' : '') }));
+      el('span', { class: 'ps', title: (p.cls != null ? vcName(p.cls) + ' · ' : '') + 'σ ' + fmt(100 * p.rel, 1) + ' % · ' + p.n + ' точек · ' + fmt(p.path) + ' м', text: (p.q === 'ok' ? '' : '⚠ ') + (p.cls != null ? VCLS_ICON[p.cls] + ' ' : '') + (p.snap ? '📷' : '') }));
     if (p.gap) row.querySelector('.pk').append(el('small', { style: 'margin-left:8px;font-size:12px;font-weight:600;color:' + (p.gap.lvl ? GAP_COL[p.gap.lvl] : 'var(--mut)'), text: '| ' + gapText(p.gap, true) }));
     ls.append(row);
   }
 }
 function openSnap(p) {
   const wrap = el('div', { class: 'snap' }, el('img', { src: p.snap, alt: 'Кадр проезда' }),
-    el('p', { class: 'fine', text: timeStr(p.wall) + ' · ' + p.laneName + ' · ' + (p.dir < 0 ? 'к камере' : 'от камеры') + ' · ' + fmt(p.kmh, 1) + ' км/ч. Чтобы сохранить снимок, удерживай изображение.' }),
+    el('p', { class: 'fine', text: timeStr(p.wall) + ' · ' + (p.cls != null ? vcName(p.cls) + ' · ' : '') + p.laneName + ' · ' + (p.dir < 0 ? 'к камере' : 'от камеры') + ' · ' + fmt(p.kmh, 1) + ' км/ч. Чтобы сохранить снимок, удерживай изображение.' }),
     el('a', { class: 'btn', href: p.snap, download: 'proezd-' + timeStr(p.wall).replace(/:/g, '-') + '.jpg' }, '⬇ Скачать JPEG'));
   openSheet('Снимок проезда', wrap);
 }
 function exportCsv() {
   if (!S.passes.length) { toast('Список проездов пуст.'); return; }
-  const rows = [['№', 'Время', 'Полоса', 'Название полосы', 'Направление', 'Скорость, км/ч', 'Мин, км/ч', 'Макс, км/ч', 'Лимит, км/ч', 'Превышение', 'σ, %', 'Путь, м', 'Точек', 'Число на метке', 'Качество', 'Дистанция, с', 'Дистанция, м', 'Близко']];
+  const rows = [['№', 'Время', 'Полоса', 'Название полосы', 'Направление', 'Скорость, км/ч', 'Мин, км/ч', 'Макс, км/ч', 'Лимит, км/ч', 'Превышение', 'σ, %', 'Путь, м', 'Точек', 'Число на метке', 'Качество', 'Дистанция, с', 'Дистанция, м', 'Близко', 'Тип ТС']];
   const d = x => x.toFixed(1).replace('.', ',');
   for (const p of S.passes.slice().reverse()) {
     const dt = new Date(p.wall);
-    rows.push([p.id, dt.getFullYear() + '-' + pad2(dt.getMonth() + 1) + '-' + pad2(dt.getDate()) + ' ' + timeStr(p.wall), p.lane, p.laneName, p.dir < 0 ? 'к камере' : 'от камеры', d(p.kmh), d(p.kmhMin), d(p.kmhMax), p.limit, p.kmh > p.limit ? 'да' : 'нет', d(100 * p.rel), d(p.path), p.n, p.live != null ? Math.round(p.live) : '', p.q, p.gap && !p.gap.slow ? d(p.gap.s) : '', p.gap ? d(p.gap.m) : '', p.gap && p.gap.lvl === 2 ? 'да' : '']);
+    rows.push([p.id, dt.getFullYear() + '-' + pad2(dt.getMonth() + 1) + '-' + pad2(dt.getDate()) + ' ' + timeStr(p.wall), p.lane, p.laneName, p.dir < 0 ? 'к камере' : 'от камеры', d(p.kmh), d(p.kmhMin), d(p.kmhMax), p.limit, p.kmh > p.limit ? 'да' : 'нет', d(100 * p.rel), d(p.path), p.n, p.live != null ? Math.round(p.live) : '', p.q, p.gap && !p.gap.slow ? d(p.gap.s) : '', p.gap ? d(p.gap.m) : '', p.gap && p.gap.lvl === 2 ? 'да' : '', p.cls != null ? vcName(p.cls) : '']);
   }
   const csv = '\uFEFF' + rows.map(r => r.map(v => { v = String(v); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }).join(';')).join('\r\n');
   try {
@@ -3076,10 +3135,481 @@ function captureSnap(tr) {
   } catch (e) { /* снимок необязателен */ }
 }
 
+/* =====================  Высокие нарушения  =====================
+ * Отдельная необязательная система: 2 линии-ворот, скорость = расстояние ÷ время между ними.
+ * Срабатывает только если скорость не меньше «лимит + превышение» (превышение — не меньше CONFIG.viol.minOver). Медленнее — игнор, без записи.
+ * Над машиной на экране эта система ничего не рисует: результат — фото (кадр + вырез машины), скорость, время, расстояние — во вкладке «Нарушители» нижнего меню.
+ * Источники записи: ворота (D÷t) и основная система (итоговая скорость проезда). Один трек основной системы = одна запись.
+ * Тип ТС: берётся из класса рамки детектора (COCO: car / motorcycle / bus / truck), голосованием по кадрам трека. Модель детектора не менялась.
+ * ANPR/OCR: отдельный модуль (Tesseract.js, грузится по требованию) — не влияет на замер и нарушения, работает только по сохранённому фото.
+ */
+const VIOL_COL = '#ff7a59';
+const VCLS_RU = ['Легковой', 'Мотоцикл', 'Автобус', 'Грузовой'], VCLS_ICON = ['🚗', '🏍', '🚌', '🚚'];
+const vcName = c => (c != null && VCLS_RU[c]) || '—';
+const vcCode = n => (n === 'car' ? 0 : n === 'motorcycle' ? 1 : n === 'bus' ? 2 : n === 'truck' ? 3 : -1);
+const violSrcName = s => (s === 'both' ? 'ворота + основная' : s === 'main' ? 'основная' : 'ворота');
+const violThr = () => S.limit + clamp(Math.round(S.viol.over) || 0, CONFIG.viol.minOver, CONFIG.viol.maxOver);
+const violSuffix = () => (S.viol.on ? ' · 🚨 ' + S.vlist.length : '');
+
+/* ---------- Тип ТС: голосование по рамкам детектора, попавшим на блоб трека ---------- */
+function vcVote(t) {
+  const M = R.vc || (R.vc = new Map());
+  for (const tr of R.trk.tracks) {
+    const b = tr.blob; if (!b || b.detC == null || tr.tLast !== t) continue;
+    let v = M.get(tr.id);
+    if (!v) { v = { n: [0, 0, 0, 0], last: null }; M.set(tr.id, v); if (M.size > 600) M.delete(M.keys().next().value); }
+    v.n[b.detC]++; v.last = b.detC;
+  }
+}
+function vcClass(id) {
+  const v = R.vc && R.vc.get(id); if (!v) return null;
+  let bk = -1, bn = 0;
+  for (let k = 0; k < 4; k++) if (v.n[k] > bn || (v.n[k] === bn && bn > 0 && k === v.last)) { bn = v.n[k]; bk = k; }
+  return bk >= 0 ? bk : null;
+}
+
+/* ---------- Расстояние между воротами нарушений (мастер) ---------- */
+function violAutoDists() {   // по калибровке каждой полосы, на опорной колонке; null — калибровки нет или ворота вне зоны
+  const asp = gateAsp(), vr = gateVr(S.viol.gates, asp), out = [];
+  for (let li = 0; li < S.calibs.length; li++) {
+    const c = S.calibs[li];
+    if (!c || !c.ok || !vr.every(v => v >= c.vFar && v <= 1)) { out.push(null); continue; }
+    const d = Math.abs(c.sOf(vr[1]) - c.sOf(vr[0]));
+    out.push(isFinite(d) ? d : null);
+  }
+  return out;
+}
+function violZoneOk() { const a = violAutoDists(); return a.length > 0 && a.every(d => d != null); }
+function violDist() {   // одно число для подписи и проверок: вручную — введённое, по калибровке — минимум по полосам
+  if (S.viol.distMode === 'manual') return S.viol.distM;
+  const a = violAutoDists().filter(d => d != null);
+  return a.length ? Math.min(...a) : null;
+}
+function violLbl(i) { const D = violDist(); return 'Н' + (i + 1) + (i === 1 && D != null && isFinite(D) ? ' · ' + fmt(D, D % 1 ? 1 : 0) + ' м' : ''); }
+function violLines(aw, ah) {   // линии ворот в координатах кадра анализа: y(x) = ah·(v + ks·(x/aw − aim)), ks = tgθ·aw/ah
+  const g = S.viol.gates, asp = aw / ah;
+  return [0, 1].map(i => ({ v: g.v[i], ks: Math.tan(gRot(g, i)) * asp, a: g.aim[i] }));
+}
+
+/* ---------- Монитор ворот: пересечение линий нижней кромкой трека, интерполяция момента между кадрами ---------- */
+class FastGates {
+  constructor(o) { this.aw = o.aw; this.ah = o.ah; this.L = o.lines; this.trk = o.trk; this.mode = o.mode; this.distM = o.distM; this.C = o.cfg; this.thr = o.thr; this.st = new Map(); this.ev = []; }
+  yAt(i, x) { const L = this.L[i]; return this.ah * (L.v + L.ks * (x / this.aw - L.a)); }
+  _s(p, li) {   // метры вдоль дороги по калибровке полосы li; NaN — точка вне зоны калибровки
+    const c = calAt(this.trk.cals, li), v = this.trk._v(p.x, p.y, li);
+    return v >= c.vFar - 1e-6 && v <= 1.0001 ? c.sOf(v) : NaN;
+  }
+  update(tracks, t) {
+    const out = [], C = this.C;
+    for (const tr of tracks) {
+      const bl = tr.blob;
+      if (tr.dup || !bl || tr.tLast !== t || !bl.usable || bl.touching) continue;   // точка берётся только при надёжной нижней кромке
+      let st = this.st.get(tr.id);
+      if (!st) { st = { p: null, c: [null, null], trail: [], done: false, seen: t }; this.st.set(tr.id, st); }
+      st.seen = t;
+      if (st.done) continue;
+      const p1 = { t, x: bl.xc, y: bl.yEdge }, p0 = st.p;
+      const fresh = [];
+      if (p0 && t > p0.t && t - p0.t <= C.maxGapSec) {
+        for (let i = 0; i < 2; i++) {
+          if (st.c[i]) continue;
+          const d0 = p0.y - this.yAt(i, p0.x), d1 = p1.y - this.yAt(i, p1.x);
+          if (d0 === d1 || d0 * d1 > 0) continue;
+          const f = d0 / (d0 - d1);
+          st.c[i] = { gate: i, id: tr.id, lane: tr.lane, u: bl.u, used: false, t: p0.t + (t - p0.t) * f, x: p0.x + (p1.x - p0.x) * f, y: p0.y + (p1.y - p0.y) * f, dir: d1 > d0 ? 1 : -1 };   // dir +1 — кромка идёт вниз кадра (к камере)
+          this.ev.push(st.c[i]); fresh.push(i);
+        }
+      }
+      st.p = p1; st.trail.push(p1); if (st.trail.length > 120) st.trail.shift();
+      for (const i of fresh) { const ev = this._pair(tr, st, i); if (ev) { st.done = true; out.push(ev); break; } }
+    }
+    for (const [id, st] of this.st) if (t - st.seen > 3 || t < st.seen) this.st.delete(id);
+    this.ev = this.ev.filter(e => t - e.t < 3 && t >= e.t - 1);
+    return out;
+  }
+  _pair(tr, st, i) {
+    const C = this.C, e = st.c[i], o = st.c[1 - i];
+    if (o) { const ev = this._event(tr, st, o, e); if (ev) return ev; }   // оба пересечения у одного трека
+    // обрыв трека между воротами и новый ID: пересечения двух разных треков одной полосы и направления, в правильном порядке, с правдоподобной скоростью
+    const li = tr.lane - 1, thr = this.thr ? this.thr() : 0;
+    let best = null;
+    for (const f of this.ev) {
+      if (f.gate === i || f.used || f.id === tr.id || f.lane !== e.lane || f.dir !== e.dir) continue;
+      const T = e.t - f.t;
+      if (T < C.minT || (e.y - f.y) * e.dir <= 0) continue;                  // вторая линия — после первой и дальше по ходу движения
+      if (Math.abs(e.u - f.u) > 0.3) continue;                                 // та же линия движения внутри полосы
+      const D = this.mode === 'manual' ? this.distM : Math.abs(this._s(e, li) - this._s(f, li));
+      if (!(D >= C.minDistM)) continue;
+      const kmh = D / T * 3.6;
+      if (!(kmh <= C.maxSpeedKmh) || kmh < 0.9 * thr) continue;                // связываем только то, что похоже на нарушение
+      const dd = Math.abs(e.u - f.u);
+      if (!best || dd < best.dd) best = { f, T, D, kmh, dd };
+    }
+    if (!best) return null;
+    e.used = best.f.used = true;
+    return { id: tr.id, ids: [best.f.id, tr.id], link: true, lane: tr.lane, dir: e.dir > 0 ? -1 : 1, t0: best.f.t, t1: e.t, T: best.T, D: best.D, kmh: best.kmh, dMode: this.mode === 'manual' ? 'manual' : 'calib', tr };
+  }
+  _event(tr, st, a, b) {
+    const C = this.C;
+    if (a.dir !== b.dir) return null;
+    const t0 = Math.min(a.t, b.t), t1 = Math.max(a.t, b.t), T = t1 - t0;
+    if (T < C.minT) return null;
+    // между воротами: кадры без дыр и кромка идёт в одну сторону (иначе это не один и тот же проезд)
+    let steps = 0, good = 0;
+    for (let k = 1; k < st.trail.length; k++) {
+      const p = st.trail[k - 1], q = st.trail[k];
+      if (q.t <= t0 || p.t >= t1) continue;
+      if (q.t - p.t > C.maxGapSec) return null;
+      steps++; if ((q.y - p.y) * a.dir >= -1.0) good++;
+    }
+    if (!steps || good < 0.8 * steps) return null;
+    let D = this.distM;
+    if (this.mode !== 'manual') { const li = tr.lane - 1; D = Math.abs(this._s(a, li) - this._s(b, li)); }
+    if (!(D >= C.minDistM)) return null;
+    const kmh = D / T * 3.6;
+    if (!(kmh <= C.maxSpeedKmh)) return null;
+    a.used = b.used = true;
+    return { id: tr.id, ids: [tr.id], link: false, lane: tr.lane, dir: a.dir > 0 ? -1 : 1, t0, t1, T, D, kmh, dMode: this.mode === 'manual' ? 'manual' : 'calib', tr };   // dir как у проездов: −1 к камере
+  }
+}
+
+/* ---------- Фото: кадр целиком + вырез машины в родном разрешении; подпись с данными — внизу, не поверх машины ---------- */
+function violGrab(b) {
+  try {
+    const vw = video.videoWidth, vh = video.videoHeight; if (!vw || !vh || !R.geo) return null;
+    const C = CONFIG.viol, k = Math.min(1, C.snapMaxSide / Math.max(vw, vh)), w = Math.round(vw * k), h = Math.round(vh * k);
+    const full = document.createElement('canvas'); full.width = w; full.height = h;
+    full.getContext('2d').drawImage(video, 0, 0, w, h);
+    let crop = null;
+    if (b) {
+      const pv = R.geo.pivot, q = [warpFwd(R.p, pv, b.x0, b.y0), warpFwd(R.p, pv, b.x1 + 1, b.y0), warpFwd(R.p, pv, b.x0, b.y1 + 1), warpFwd(R.p, pv, b.x1 + 1, b.y1 + 1)];
+      const sx = vw / R.aw, sy = vh / R.ah;
+      let x0 = Math.min(...q.map(a => a[0])) * sx, x1 = Math.max(...q.map(a => a[0])) * sx, y0 = Math.min(...q.map(a => a[1])) * sy, y1 = Math.max(...q.map(a => a[1])) * sy;
+      const mx = (x1 - x0) * C.cropMargin, my = (y1 - y0) * C.cropMargin;
+      x0 = clamp(x0 - mx, 0, vw); x1 = clamp(x1 + mx, 0, vw); y0 = clamp(y0 - my, 0, vh); y1 = clamp(y1 + my, 0, vh);
+      if (x1 - x0 >= 16 && y1 - y0 >= 16) {
+        const kc = Math.min(1, C.cropMaxSide / Math.max(x1 - x0, y1 - y0));
+        crop = document.createElement('canvas'); crop.width = Math.round((x1 - x0) * kc); crop.height = Math.round((y1 - y0) * kc);
+        crop.getContext('2d').drawImage(video, x0, y0, x1 - x0, y1 - y0, 0, 0, crop.width, crop.height);   // из видео напрямую: без потери разрешения при уменьшении кадра
+      }
+    }
+    return { full, crop };
+  } catch (e) { return null; }
+}
+function violLine(r) {
+  return new Date(r.wall).toLocaleString('ru-RU') + ' · ' + fmt(r.kmh) + ' км/ч · лимит ' + r.limit + ' · ' + fmt(r.D, 1) + ' м / ' + fmt(r.T, 2) + ' с' + (r.src === 'main' ? ' (основная система)' : '');
+}
+function violPhoto(rec, cap) {
+  if (!cap) { rec.noPhoto = true; violRenderSoon(); return; }
+  if (S.viol.strip) {
+    const g = cap.full.getContext('2d'), w = cap.full.width, h = cap.full.height, fs = Math.max(14, Math.round(w / 55));
+    g.font = '600 ' + fs + 'px ' + TAG_FONT; g.textAlign = 'left'; g.textBaseline = 'middle';
+    g.fillStyle = 'rgba(0,0,0,.62)'; g.fillRect(0, h - fs * 1.9, w, fs * 1.9);
+    g.fillStyle = '#fff'; g.fillText(violLine(rec), 8, h - fs * 0.95);
+  }
+  const done = (key, bl) => {
+    if (!bl) return;
+    if (!S.vlist.includes(rec)) return;   // запись уже вытеснена из списка
+    rec[key] = URL.createObjectURL(bl); violRenderSoon();
+    if (key === 'crop' && S.viol.ocr) anprQueue(rec);
+  };
+  cap.full.toBlob(bl => done('snap', bl), 'image/jpeg', CONFIG.viol.jpeg);
+  if (cap.crop) cap.crop.toBlob(bl => done('crop', bl), 'image/jpeg', 0.92);
+}
+function violFree(r) { for (const k of ['snap', 'crop']) if (r[k]) { try { URL.revokeObjectURL(r[k]); } catch (_) {} r[k] = null; } }
+let violTimer = 0;
+function violRenderSoon() { clearTimeout(violTimer); violTimer = setTimeout(() => { if (S.mode === 'run') renderDrawer(); }, 80); }
+
+/* ---------- Записи ---------- */
+function violAdd(o) {
+  const rec = Object.assign({ id: ++S.nViol, wall: Date.now(), limit: S.limit, over: S.viol.over, snap: null, crop: null, plate: null, plateSrc: '', noPhoto: false }, o);
+  S.vlist.unshift(rec);
+  while (S.vlist.length > CONFIG.viol.keep) violFree(S.vlist.pop());
+  renderDrawer(); updateHud(true);
+  return rec;
+}
+const violHasId = (r, ids) => ids.some(id => r.trackId === id || (r.trackIds && r.trackIds.includes(id)));
+function violFromGates(ev) {
+  if (!S.viol.on) return;
+  if (ev.kmh < violThr()) return;                        // ниже порога — игнор, ни записи, ни фото
+  if (S.vlist.some(r => violHasId(r, ev.ids))) return;
+  const rec = violAdd({ src: 'gates', trackId: ev.id, trackIds: ev.ids, link: ev.link, t0: ev.t0, t1: ev.t1, lane: ev.lane, laneName: laneName(ev.lane), dir: ev.dir, kmh: ev.kmh, kmhGates: ev.kmh, T: ev.T, D: ev.D, dMode: ev.dMode, vt: ev.t1, cls: vcClass(ev.id) });
+  violPhoto(rec, violGrab(ev.tr.blob));
+}
+function violPre(t) {   // «сначала сохранить, потом посчитать»: фото очень быстрой машины делается, пока она в кадре; итог основной системы приходит позже
+  if (!S.viol.on || !R.trk) return;
+  const P = R.vioPre || (R.vioPre = new Map()), thr = violThr() - CONFIG.viol.preMargin;
+  for (const tr of R.trk.tracks) {
+    if (!tr.shown || tr.kmh == null || tr.kmh < thr || tr.pts.length < 5 || tr.dup || tr.tLast !== t) continue;
+    const bl = tr.blob; if (!bl || !bl.usable || bl.touching) continue;
+    const e = P.get(tr.id);
+    if (e && (e.n >= 3 || bl.area < 1.6 * e.area)) continue;   // до 3 кадров на трек; новый — только если машина заметно крупнее (ближе)
+    const cap = violGrab(bl); if (!cap) continue;
+    P.set(tr.id, { cap, area: bl.area, n: e ? e.n + 1 : 1, t });
+    if (P.size > 4) P.delete(P.keys().next().value);
+  }
+}
+function violFromMain(ps) {
+  if (!S.viol.on) return;
+  const thr = violThr(), pre = R.vioPre && R.vioPre.get(ps.id);
+  if (R.vioPre) R.vioPre.delete(ps.id);
+  const old = S.vlist.find(r => violHasId(r, [ps.id]));
+  if (old) {   // эту машину уже записали ворота: добавляем скорость основной системы для сверки
+    old.kmhMain = ps.kmh;
+    if (ps.kmh >= thr && old.src === 'gates') old.src = 'both';
+    old.mismatch = Math.abs(old.kmhGates - ps.kmh) / Math.max(old.kmhGates, ps.kmh, 1) > 0.25;
+    violRenderSoon(); return;
+  }
+  if (ps.kmh < thr) return;
+  const rec = violAdd({ src: 'main', trackId: ps.id, trackIds: [ps.id], t0: ps.t0, t1: ps.t1, lane: ps.lane, laneName: laneName(ps.lane), dir: ps.dir, kmh: ps.kmh, kmhMain: ps.kmh, T: ps.t1 - ps.t0, D: ps.path, dMode: 'track', vt: ps.t1, cls: vcClass(ps.id) });
+  if (pre) violPhoto(rec, pre.cap);
+  else if (ps.snap) {   // чистого кадра нет — берём снимок основной системы (на нём плашка), копией: оригинал живёт недолго
+    rec.tagged = true;
+    fetch(ps.snap).then(r => r.blob()).then(bl => { if (S.vlist.includes(rec)) { rec.snap = URL.createObjectURL(bl); violRenderSoon(); } }).catch(() => { rec.noPhoto = true; });
+  } else rec.noPhoto = true;
+}
+function clearViol() { for (const r of S.vlist) violFree(r); S.vlist = []; renderDrawer(); updateHud(true); }
+
+/* ---------- ANPR / OCR: отдельный модуль, по сохранённому фото (Tesseract.js грузится при первом запуске) ---------- */
+const ANPR = { w: null, p: null, q: [], busy: false };
+function anprLoadLib() {
+  if (window.Tesseract) return Promise.resolve(true);
+  return new Promise(res => { const s = document.createElement('script'); s.src = CONFIG.viol.tessUrl; s.onload = () => res(!!window.Tesseract); s.onerror = () => res(false); document.head.append(s); });
+}
+function anprWorker() {
+  if (ANPR.w) return Promise.resolve(ANPR.w);
+  if (!ANPR.p) ANPR.p = (async () => {
+    if (!await anprLoadLib()) throw new Error('не удалось загрузить Tesseract.js — нужен интернет');
+    const w = await window.Tesseract.createWorker('eng');
+    await w.setParameters({ tessedit_pageseg_mode: '6' });   // без белого списка символов: с ним Tesseract обнуляет уверенность; лишнее отсекает anprNorm
+    ANPR.w = w; return w;
+  })().catch(e => { ANPR.p = null; throw e; });
+  return ANPR.p;
+}
+function anprPrep(img, y0f, y1f) {   // нижняя часть кадра/выреза → увеличение (≈1000 px по ширине) → серый → растяжка по 2–98 перцентилям
+  const W = img.width, H = img.height, sy0 = Math.round(H * y0f), sh = Math.max(8, Math.round(H * (y1f - y0f)));
+  const k = clamp(1000 / W, 1, 4), c = document.createElement('canvas'); c.width = Math.round(W * k); c.height = Math.round(sh * k);
+  const g = c.getContext('2d', { willReadFrequently: true }); g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+  g.drawImage(img, 0, sy0, W, sh, 0, 0, c.width, c.height);
+  const d = g.getImageData(0, 0, c.width, c.height), a = d.data, hist = new Uint32Array(256), n = c.width * c.height;
+  for (let i = 0; i < a.length; i += 4) { const y = (77 * a[i] + 150 * a[i + 1] + 29 * a[i + 2]) >> 8; a[i] = a[i + 1] = a[i + 2] = y; hist[y]++; }
+  let lo = 0, hi = 255, acc = 0;
+  for (; lo < 255; lo++) { acc += hist[lo]; if (acc >= 0.02 * n) break; }
+  acc = 0; for (; hi > 0; hi--) { acc += hist[hi]; if (acc >= 0.02 * n) break; }
+  const sc = hi > lo + 8 ? 255 / (hi - lo) : 1;
+  for (let i = 0; i < a.length; i += 4) { const y = clamp((a[i] - lo) * sc, 0, 255); a[i] = a[i + 1] = a[i + 2] = y; }
+  g.putImageData(d, 0, 0); return c;
+}
+const anprNorm = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+function anprFix(tok) {   // формат «1–2 буквы + 1–4 цифры» (Латвия: AB-1234, A-1234): исправляем путаницу O/0, I/1, B/8, S/5, Z/2; null — не похоже
+  const toL = { 0: 'O', 1: 'I', 8: 'B', 5: 'S', 2: 'Z' }, toD = { O: '0', I: '1', B: '8', S: '5', Z: '2', L: '1' };
+  for (let k = 1; k <= 2; k++) {
+    if (tok.length < k + 1 || tok.length > k + 4) continue;
+    if (!/^[A-Z]/.test(tok)) return null;   // первая буква префикса должна быть буквой уже в исходном чтении: чисто цифровой кусок в номер не «превращаем»
+    if (!/[0-9]/.test(tok.slice(k))) continue;   // хвост без единой настоящей цифры — это слово, а не номер
+    const pre = tok.slice(0, k).replace(/[0-9]/g, m => toL[m] || m), suf = tok.slice(k).replace(/[A-Z]/g, m => toD[m] || m);
+    if (/^[A-Z]{1,2}$/.test(pre) && /^[0-9]{1,4}$/.test(suf)) return pre + suf;
+  }
+  return null;
+}
+function anprPick(cands) {   // cands: [{ t, conf }] из разных режимов/областей → { plate, conf, lv } | null; повтор одного и того же результата в разных проходах усиливает его
+  const M = new Map();
+  for (const c of cands) {
+    const fx = anprFix(c.t), key = fx || c.t, m = M.get(key) || { n: 0, conf: 0, lv: !!fx, mixed: /[A-Z]/.test(c.t) && /[0-9]/.test(c.t) };
+    m.n++; m.conf = Math.max(m.conf, c.conf); M.set(key, m);
+  }
+  let best = null;
+  for (const [key, m] of M) {
+    const sc = m.conf + 8 * (m.n - 1) + (m.lv ? 25 : m.mixed ? 8 : -25);
+    if (!best || sc > best.sc) best = { sc, key, m };
+  }
+  if (!best || best.m.conf < 40 || best.key.length < 4 || !(best.m.lv || best.m.mixed)) return null;
+  const p = best.m.lv ? best.key.replace(/^([A-Z]{1,2})([0-9]+)$/, '$1-$2') : best.key;
+  return { plate: p, conf: Math.round(best.m.conf), lv: best.m.lv };
+}
+async function anprRead(img) {   // два фрагмента (низ выреза / целиком) × три режима разбора страницы; кандидаты — строки и склейки соседних слов
+  const w = await anprWorker(), cands = [];
+  for (const [a, b] of [[0.35, 1], [0, 1]]) {
+    const cv = anprPrep(img, a, b);
+    for (const psm of ['6', '7', '11']) {
+      await w.setParameters({ tessedit_pageseg_mode: psm });
+      const { data } = await w.recognize(cv);
+      for (const ln of (data.lines || [])) {
+        const ws = (ln.words && ln.words.length ? ln.words : [ln]).map(x => ({ t: anprNorm(x.text), conf: x.confidence || ln.confidence || 0 })).filter(x => x.t);
+        for (let s0 = 0; s0 < ws.length; s0++) for (let k = 1; k <= 3 && s0 + k <= ws.length; k++) {
+          const part = ws.slice(s0, s0 + k), t = part.map(x => x.t).join('');
+          if (t.length >= 4 && t.length <= 8) cands.push({ t, conf: Math.min(...part.map(x => x.conf)) });
+        }
+      }
+    }
+  }
+  await w.setParameters({ tessedit_pageseg_mode: '6' });
+  return anprPick(cands);
+}
+function anprLoadImg(url) { return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('фото не открылось')); im.src = url; }); }
+async function anprRun(rec) {   // по вырезу машины (или кадру, если выреза нет); результат — в запись
+  const url = rec.crop || rec.snap; if (!url) throw new Error('нет фото');
+  rec.plateState = 'run';
+  try {
+    const r = await anprRead(await anprLoadImg(url));
+    if (r) { rec.plate = r.plate; rec.plateConf = r.conf; rec.plateSrc = 'ocr'; rec.plateState = 'ok'; }
+    else { rec.plateState = 'none'; }
+  } catch (e) { rec.plateState = 'err'; rec.plateErr = String(e && e.message || e); throw e; }
+}
+function anprQueue(rec) {
+  ANPR.q.push(rec);
+  if (ANPR.busy) return;
+  ANPR.busy = true;
+  (async () => {
+    while (ANPR.q.length) { const r = ANPR.q.shift(); if (!S.vlist.includes(r) || r.plate) continue; try { await anprRun(r); } catch (e) { toast('OCR: ' + (r.plateErr || e), 4500); ANPR.q.length = 0; } violRenderSoon(); }
+    ANPR.busy = false;
+  })();
+}
+function anprFromFile() {   // отдельно от замера: любое фото машины → номер
+  const inp = el('input', { type: 'file', accept: 'image/*' });
+  inp.addEventListener('change', async () => {
+    const f = inp.files && inp.files[0]; if (!f) return;
+    const out = el('div', { class: 'status', text: 'Читаю номер… (в первый раз подгружается библиотека)' });
+    const url = URL.createObjectURL(f);
+    openSheet('Номер по фото', el('div', { class: 'snap' }, el('img', { src: url, alt: 'Фото' }), out));
+    try {
+      const r = await anprRead(await anprLoadImg(url));
+      if (r) { out.className = 'status ok'; out.replaceChildren(el('span', { class: 'plate', text: r.plate }), el('div', { class: 'fine', text: 'Уверенность OCR ' + r.conf + ' %' + (r.lv ? ' · формат «буквы + цифры»' : ' · формат не распознан, проверь вручную') })); }
+      else { out.className = 'status warn'; out.textContent = 'Номер не прочитан. Нужен крупный, чёткий кадр: номер должен занимать не меньше ~100 px по ширине.'; }
+    } catch (e) { out.className = 'status bad'; out.textContent = 'OCR недоступен: ' + (e && e.message ? e.message : e); }
+  });
+  inp.click();
+}
+
+/* ---------- Нижнее меню: вкладка «Нарушители» ---------- */
+function renderDtabs() {
+  const t = $('dtabs'), show = S.viol.on || S.vlist.length > 0;
+  if (!show && S.dtab === 'viol') S.dtab = 'pass';
+  t.hidden = !show; if (!show) return;
+  t.replaceChildren(
+    el('button', { type: 'button', class: 'dtab' + (S.dtab === 'pass' ? ' on' : ''), onclick: () => { S.dtab = 'pass'; renderDrawer(); } }, 'Проезды · ' + S.passes.length),
+    el('button', { type: 'button', class: 'dtab v' + (S.dtab === 'viol' ? ' on' : ''), onclick: () => { S.dtab = 'viol'; renderDrawer(); } }, '🚨 Нарушители · ' + S.vlist.length));
+}
+function renderViolPane() {
+  const box = $('vpane'), P = S.vlist;
+  box.replaceChildren();
+  let mx = 0; for (const r of P) if (r.kmh > mx) mx = r.kmh;
+  $('drawerSum').textContent = P.length ? 'Нарушители: ' + P.length + ' · макс. ' + fmt(mx) + ' км/ч' : 'Нарушители: пока нет';
+  box.append(el('div', { class: 'fine', text: 'Срабатывает от ' + violThr() + ' км/ч (лимит ' + S.limit + ' + ' + S.viol.over + '). Всё медленнее игнорируется.' }));
+  if (!P.length) { box.append(el('div', { class: 'empty', text: 'Пока нет машин выше порога.' })); return; }
+  for (const r of P) {
+    const th = (r.crop || r.snap) ? el('img', { class: 'vth', src: r.crop || r.snap, alt: '' }) : el('div', { class: 'vth none', text: r.noPhoto ? 'нет фото' : '…' });
+    box.append(el('div', { class: 'vrow', onclick: () => openViol(r) }, th,
+      el('div', null, el('div', { class: 'vk', text: fmt(r.kmh) + ' км/ч  +' + fmt(r.kmh - r.limit) }), el('div', { class: 'vm', text: timeStr(r.wall) + ' · П' + r.lane + ' · ' + fmt(r.D, 1) + ' м / ' + fmt(r.T, 2) + ' с' })),
+      el('div', { class: 'vsrc', text: (r.cls != null ? VCLS_ICON[r.cls] + ' ' : '') + violSrcName(r.src) + (r.plate ? ' · ' + r.plate : '') + (r.mismatch ? ' · ⚠' : '') })));
+  }
+  box.append(el('div', { class: 'row' }, el('button', { class: 'btn small', type: 'button', onclick: exportViolCsv }, '⬇ CSV'), el('button', { class: 'btn small danger', type: 'button', onclick: () => { if (confirm('Удалить всех нарушителей и их фото?')) clearViol(); } }, 'Очистить')));
+}
+function violFileName(r, tail) { return 'narushitel-' + new Date(r.wall).toISOString().slice(0, 19).replace(/[:T]/g, '-') + '-' + Math.round(r.kmh) + 'kmh' + tail + '.jpg'; }
+function openViol(r) {
+  const wrap = el('div', { class: 'snap' }), imgs = el('div'), dl = el('div', { class: 'row' });
+  const paint = () => {
+    imgs.replaceChildren(); dl.replaceChildren();
+    if (r.crop) { imgs.append(el('img', { src: r.crop, alt: 'Машина' })); dl.append(el('a', { class: 'btn small', href: r.crop, download: violFileName(r, '-car') }, '⬇ Машина')); }
+    if (r.snap) { imgs.append(el('img', { src: r.snap, alt: 'Кадр' })); dl.append(el('a', { class: 'btn small', href: r.snap, download: violFileName(r, '') }, '⬇ Кадр')); }
+    if (!r.crop && !r.snap) imgs.append(el('div', { class: 'empty', text: r.noPhoto ? 'Фото сделать не удалось.' : 'Фото сохраняется…' }));
+  };
+  paint();
+  const cell = (k, v) => el('div', null, el('b', { text: v }), el('small', { text: k }));
+  const grid = el('div', { class: 'vdet' },
+    cell('скорость, км/ч', fmt(r.kmh, 1)), cell('превышение, км/ч', '+' + fmt(r.kmh - r.limit, 1)),
+    cell(r.src === 'main' ? 'путь, м' : 'расстояние, м', fmt(r.D, 1)), cell(r.src === 'main' ? 'время в зоне, с' : 'время между воротами, с', fmt(r.T, 3)),
+    cell('тип ТС', (r.cls != null ? VCLS_ICON[r.cls] + ' ' : '') + vcName(r.cls)), cell('источник', violSrcName(r.src)),
+    cell('полоса · направление', r.laneName + ' · ' + (r.dir < 0 ? 'к камере' : 'от камеры')), cell('лимит, км/ч', String(r.limit)));
+  wrap.append(imgs, dl, el('p', { class: 'fine', text: new Date(r.wall).toLocaleString('ru-RU') + ' · ' + (r.dMode === 'manual' ? 'расстояние введено вручную' : r.dMode === 'calib' ? 'расстояние по калибровке' : 'путь по трекингу') + (r.tagged ? ' · на фото плашка основной системы' : '') + (r.link ? ' · пересечения сложены из двух треков (машина меняла ID)' : '') }), grid);
+  if (r.kmhMain != null && r.kmhGates != null) wrap.append(el('div', { class: 'status ' + (r.mismatch ? 'warn' : 'ok'), text: 'Ворота: ' + fmt(r.kmhGates, 1) + ' км/ч · основная система: ' + fmt(r.kmhMain, 1) + ' км/ч' + (r.mismatch ? ' — расхождение больше 25 %, проверь вручную.' : '.') }));
+  const pl = el('input', { type: 'text', value: r.plate || '', maxlength: 12, placeholder: 'номер', autocomplete: 'off', 'aria-label': 'Номер' });
+  pl.addEventListener('input', () => { r.plate = pl.value.trim().toUpperCase() || null; r.plateSrc = r.plate ? 'вручную' : ''; });
+  const info = el('div', { class: 'fine', text: r.plate ? (r.plateSrc === 'ocr' ? 'Распознано OCR (' + (r.plateConf || '?') + ' %) — проверь по фото.' : 'Введено вручную.') : 'Номер не указан.' });
+  const btn = el('button', { class: 'btn small', type: 'button', onclick: async () => {
+    btn.disabled = true; info.textContent = 'Читаю номер… (в первый раз подгружается библиотека)';
+    try { await anprRun(r); pl.value = r.plate || ''; info.textContent = r.plate ? 'Распознано OCR (' + r.plateConf + ' %) — проверь по фото.' : 'Номер не прочитан. Нужен крупный чёткий кадр; впиши вручную.'; }
+    catch (e) { info.textContent = 'OCR недоступен: ' + (e && e.message ? e.message : e); }
+    btn.disabled = false; violRenderSoon();
+  } }, '🔎 Распознать номер');
+  wrap.append(el('div', { class: 'row' }, el('div', { style: 'flex:1;min-width:120px' }, pl), btn), info);
+  openSheet('Нарушитель · ' + fmt(r.kmh) + ' км/ч', wrap);
+  const iv = setInterval(() => { if ($('sheet').hidden) { clearInterval(iv); return; } paint(); }, 700);   // фото дописываются асинхронно
+}
+function exportViolCsv() {
+  if (!S.vlist.length) { toast('Список нарушителей пуст.'); return; }
+  const d = x => (x == null || !isFinite(x) ? '' : x.toFixed(2).replace('.', ','));
+  const rows = [['№', 'Дата и время', 'Полоса', 'Направление', 'Скорость, км/ч', 'Лимит, км/ч', 'Превышение, км/ч', 'Расстояние, м', 'Время, с', 'Источник расстояния', 'Скорость ворот, км/ч', 'Скорость основной, км/ч', 'Источник записи', 'Тип ТС', 'Номер', 'Номер: источник', 'Фото']];
+  for (const r of S.vlist.slice().reverse()) {
+    const dt = new Date(r.wall);
+    rows.push([r.id, dt.getFullYear() + '-' + pad2(dt.getMonth() + 1) + '-' + pad2(dt.getDate()) + ' ' + timeStr(r.wall), r.laneName, r.dir < 0 ? 'к камере' : 'от камеры', d(r.kmh), r.limit, d(r.kmh - r.limit), d(r.D), d(r.T), r.dMode === 'manual' ? 'вручную' : r.dMode === 'calib' ? 'калибровка' : 'трекинг', d(r.kmhGates), d(r.kmhMain), violSrcName(r.src), r.cls != null ? vcName(r.cls) : '', r.plate || '', r.plateSrc || '', violFileName(r, '')]);
+  }
+  const csv = '\uFEFF' + rows.map(r => r.map(v => { v = String(v); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }).join(';')).join('\r\n');
+  try { const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })); const a = el('a', { href: url, download: 'narushiteli-' + Date.now() + '.csv' }); document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 8000); } catch (e) { toast('Не удалось сохранить файл.'); }
+}
+
+/* ---------- Мастер: необязательный шаг «Нарушители» ---------- */
+function buildViol(box) {
+  const V = S.viol, g = V.gates; fixSet(g);
+  box.append(switchRow('Фиксировать грубые превышения', '2 ворота · скорость = расстояние ÷ время · фото в «Нарушители»', V.on, v => { V.on = v; renderStep(true); }));
+  if (!V.on) { box.append(el('p', { class: 'fine', text: 'Шаг необязательный. Выключено — работает только обычный замер, нарушители не записываются.' })); return; }
+  const grid = el('div', { class: 'lgrid' }), cust = el('input', { type: 'text', inputmode: 'numeric', value: String(V.over), 'aria-label': 'Превышение, км/ч' });
+  const paint = () => grid.querySelectorAll('button').forEach(b => b.classList.toggle('on', +b.dataset.v === V.over));
+  const setOver = v => { V.over = clamp(Math.round(v), CONFIG.viol.minOver, CONFIG.viol.maxOver); cust.value = String(V.over); paint(); updateViolStatus(); };
+  for (const v of [20, 30, 40, 50, 60, 70, 80, 100]) grid.append(el('button', { type: 'button', 'data-v': v, class: 'lb', onclick: () => setOver(v) }, '+' + v));
+  cust.addEventListener('input', () => { const v = Math.round(num(cust.value)); if (v >= CONFIG.viol.minOver && v <= CONFIG.viol.maxOver) { V.over = v; paint(); updateViolStatus(); } });
+  cust.addEventListener('blur', () => { cust.value = String(V.over); });
+  box.append(el('div', { class: 'card' }, el('span', { class: 'ct', text: 'Порог: превышение над лимитом, км/ч (минимум ' + CONFIG.viol.minOver + ')' }), grid,
+    el('label', { class: 'fld' }, el('span', { class: 'fl', text: 'Своё значение' }), el('span', { class: 'fi' }, cust, el('em', { text: 'км/ч' })))));
+  paint();
+  box.append(seg(['Расстояние по калибровке', 'Расстояние вручную'], V.distMode === 'manual' ? 1 : 0, i => { V.distMode = i === 1 ? 'manual' : 'auto'; renderStep(true); }));
+  if (V.distMode === 'manual') box.append(numField('Расстояние между воротами Н1 и Н2', V.distM, v => { if (v > 0) { V.distM = v; updateViolStatus(); redraw(); } }, 'м'));
+  box.append(el('div', { class: 'card nudge' }, el('span', { id: 'nudgeLbl', class: 'fl' }),
+    el('div', { class: 'row tight' },
+      el('button', { class: 'btn small sq', type: 'button', 'aria-label': 'Линия выше на 1 пиксель', onclick: () => nudgeGate(-1) }, '▲'),
+      el('button', { class: 'btn small sq', type: 'button', 'aria-label': 'Линия ниже на 1 пиксель', onclick: () => nudgeGate(1) }, '▼'))));
+  const rb = (lbl, t, f) => el('button', { class: 'btn small sq', type: 'button', 'aria-label': lbl, onclick: f }, t);
+  box.append(el('div', { class: 'card nudge' }, el('span', { id: 'rotLbl', class: 'fl' }),
+    el('div', { class: 'row tight' }, rb('Повернуть против часовой на 0,1°', '↺', () => rotGate(-0.1)), rb('Повернуть по часовой на 0,1°', '↻', () => rotGate(0.1)), rb('Сбросить наклон', '0°', () => rotGate(null)), rb('Такой же наклон второй линии', 'Обе', () => rotGate('all')))));
+  box.append(switchRow('Строка с данными внизу фото', 'время, скорость, расстояние и время проезда; поверх машины ничего не рисуется', V.strip, v => { V.strip = v; }));
+  box.append(el('div', { id: 'violStatus', class: 'status' }));
+  updateNudge(); updateViolStatus();
+}
+function updateViolStatus() {
+  const b = $('violStatus'); if (!b) return;
+  recalc();
+  const V = S.viol, C = CONFIG.viol, thr = violThr(), D = violDist(), warns = [];
+  b.replaceChildren();
+  b.append(el('div', { text: 'Сработает от ' + thr + ' км/ч (лимит ' + S.limit + ' + ' + V.over + '). Медленнее — игнорируется, без записи и фото.' }));
+  if (V.distMode === 'auto') {
+    if (!calsOk().ok) warns.push('Калибровка не готова — вернись на шаг «Ворота и расстояния».');
+    else if (!violZoneOk()) warns.push('Н1/Н2 стоят вне зоны калибровки (от нижнего края кадра до последних основных ворот +10 %) — расстояние там недостоверно. Сдвинь линии в зону или задай расстояние вручную.');
+    else { const a = violAutoDists(); if (a.length > 1 && Math.max(...a) / Math.min(...a) > 1.05) b.append(el('div', { text: 'По полосам: ' + a.map(x => fmt(x, 1)).join(' / ') + ' м — считается по полосе, в которой едет машина.' })); }
+  }
+  if (!(D >= C.minDistM)) { if (V.distMode === 'manual' || violZoneOk()) warns.push('Расстояние между воротами — не меньше ' + C.minDistM + ' м.'); }
+  else {
+    b.append(el('div', { text: 'Расстояние Н1 → Н2: ' + fmt(D, 1) + ' м (' + (V.distMode === 'manual' ? 'вручную' : 'по калибровке') + '). На ' + thr + ' км/ч машина проедет его за ' + fmt(D / (thr / 3.6), 2) + ' с.' }));
+    if (D < C.warnDistM) warns.push('Короткая база (< ' + C.warnDistM + ' м): ошибка времени в один кадр даёт заметную ошибку скорости. Лучше 15–30 м.');
+    if (D / (thr / 3.6) < 0.2) warns.push('На пороговой скорости база проходится быстрее 0,2 с — это всего 4–6 кадров. Раздвинь ворота.');
+  }
+  if (Math.abs(V.gates.v[0] - V.gates.v[1]) < 0.02) warns.push('Н1 и Н2 почти совпадают — раздвинь.');
+  b.className = 'status ' + (warns.length ? 'warn' : 'ok');
+  for (const w of warns) b.append(el('div', { text: '⚠ ' + w }));
+}
+function packViol() { const V = S.viol, g = V.gates; return { on: !!V.on, over: V.over, distMode: V.distMode, distM: V.distM, strip: !!V.strip, v: g.v.slice(0, 2), aim: g.aim.slice(0, 2), rot: g.rot.slice(0, 2) }; }
+function readViol(o) {
+  if (!o) return;
+  const V = S.viol, g = V.gates;
+  V.on = !!o.on; V.over = clamp(Math.round(+o.over) || CONFIG.viol.defOver, CONFIG.viol.minOver, CONFIG.viol.maxOver);
+  V.distMode = o.distMode === 'manual' ? 'manual' : 'auto'; V.distM = o.distM > 0 ? +o.distM : CONFIG.viol.defDistM; V.strip = o.strip !== false;
+  for (let i = 0; i < 2; i++) { if (o.v && o.v[i] > 0 && o.v[i] < 1) g.v[i] = +o.v[i]; g.aim[i] = o.aim && isFinite(o.aim[i]) ? +o.aim[i] : 0.5; g.rot[i] = o.rot && isFinite(o.rot[i]) ? +o.rot[i] : 0; }
+  g.sel = 0;
+}
+
 /* Т8: счётчики и журнал треков (рождение, показ, потеря + причина), выгрузка кнопкой; Т4: проверка блоба для «…» */
 const newCnt = () => ({ lowSave: 0, born: 0, shown: 0, lost: 0, revive: 0, idSw: 0, falseTags: 0, missed: 0, drop: 0, why: {} });
 const cntSuffix = () => R.cnt ? ' · пропущ. ' + R.cnt.missed + ' · ложн. ' + R.cnt.falseTags + ' · смен ID ' + R.cnt.idSw + ' · низк. ' + R.cnt.lowSave : '';
-function refreshSum() { const e = $('drawerSum'); if (e) e.textContent = e.textContent.replace(/ · пропущ\..*$/, '') + cntSuffix(); }
+function refreshSum() { const e = $('drawerSum'); if (e && S.dtab !== 'viol') e.textContent = e.textContent.replace(/ · пропущ\..*$/, '') + cntSuffix(); }
 function jl(ev, tr, t, why, ps) {
   const C = R.cnt; if (!C) return;
   if (ev === 'birth') C.born++; else if (ev === 'show') C.shown++; else if (ev === 'lost') C.lost++; else if (ev === 'revive') C.revive++; else if (ev === 'idswitch') C.idSw++;
@@ -3169,6 +3699,8 @@ async function startRun() {
     }
     R.rvfc = 0; R.raf = 0;
     R.trk.onEv = jl;
+    R.vc = new Map(); R.vioPre = new Map();
+    R.fg = S.viol.on ? new FastGates({ aw: P.aw, ah: P.ah, lines: violLines(P.aw, P.ah), trk: R.trk, mode: S.viol.distMode, distM: S.viol.distM, cfg: CONFIG.viol, thr: violThr }) : null;   // ворота нарушений (необязательно)
     if (!R.ltObs && window.PerformanceObserver) { try { R.ltObs = new PerformanceObserver(l => { for (const e of l.getEntries()) if (R.running && R.log && R.log.length < 5000 && (R.nLong = (R.nLong || 0) + 1) <= 150) R.log.push([R.tNow.toFixed(2), 'longtask', '', '', '', '', Math.round(e.duration) + ' мс']); }); R.ltObs.observe({ entryTypes: ['longtask'] }); } catch (_) {} }   // длинные задачи основного потока — в журнал (причина фризов)
     if (!R.maskCv) { R.maskCv = document.createElement('canvas'); R.rc = document.createElement('canvas'); R.rcx = R.rc.getContext('2d', { willReadFrequently: true }); }
     R.maskCv.width = P.aw; R.maskCv.height = P.ah; R.maskX = R.maskCv.getContext('2d'); R.maskImg = R.maskX.createImageData(P.aw, P.ah);
@@ -3192,6 +3724,7 @@ async function startRun() {
 }
 function flushTracks() {
   if (!R.trk) return;
+  if (R.fg) { R.fg.st.clear(); R.fg.ev = []; }
   const all = R.trk.tracks.concat(R.trk.limbo); for (const tr of all) tr.why = tr.why || 'flush';
   for (const ps of R.trk._finishAll(all, R.tNow)) onPass(ps);
   R.trk.reset();
@@ -3397,7 +3930,7 @@ function processFrame(now, md) {
   if (R.det.didReset) { flushTracks(); toast('Сцена сильно изменилась — фон пересоздан.'); }
   if (ready) {
     blobs = R.det.extract();
-    if (vdGate()) for (const b of blobs) { const k = vdHit(b, t); b.det = k > 0; b.detK = k; b.detT = VD.t; }
+    if (vdGate()) for (const b of blobs) { const k = vdHit(b, t); b.det = k > 0; b.detK = k; b.detT = VD.t; const dc = k > 0 && VD.cal[k - 1] ? VD.cal[k - 1].c : null; b.detC = dc != null && dc >= 0 ? dc : null; }
     const rj = R.det.rej; R.det.rej = null;   // Т5: блобы дальней трети, отброшенные фильтрами размера и формы
     if (rj) for (const s of rj) if (R.cnt.drop < CONFIG.blob.dropLog) { R.cnt.drop++; R.log.push([t.toFixed(2), 'drop', '', '', '', '', s]); }
     const tR0 = performance.now(); refineBlobs(blobs, tW0); tRf = performance.now() - tR0;
@@ -3407,6 +3940,9 @@ function processFrame(now, md) {
   const tD = performance.now(); tmAdd('det', tD - tS);
   const fin = R.trk.update(blobs, t);
   for (const ps of fin) onPass(ps);
+  vcVote(t);                                                             // тип ТС: голос рамки детектора за трек
+  if (R.fg) for (const ev of R.fg.update(R.trk.tracks, t)) violFromGates(ev);   // нарушители: ворота, D÷t
+  violPre(t);                                                            // нарушители: фото очень быстрой машины, пока она в кадре
   if (vdGate() && VD.cal && VD.t !== R.vdSeen) { R.vdSeen = VD.t; countMissed(t); }
   for (const tr of R.trk.tracks) if (tr.shown && !tr.snapTaken && tr.pts.length >= 8) { tr.snapTaken = true; captureSnap(tr); }
   const tT = performance.now(); tmAdd('trk', tT - tD);
