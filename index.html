@@ -2426,11 +2426,7 @@ async function startCamera() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw Object.assign(new Error('API камеры недоступен'), { name: window.isSecureContext ? 'NotFoundError' : 'SecurityError' });
   stopSource();
   const c = CONFIG.camera;
-  const tries = [
-    { audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: c.width }, height: { ideal: c.height }, frameRate: { ideal: c.fps } } },
-    { audio: false, video: { facingMode: { ideal: 'environment' } } },
-    { audio: false, video: true }
-  ];
+  const tries = wkCamTries(c);
   let stream = null, err = null;
   for (const t of tries) {
     try { stream = await navigator.mediaDevices.getUserMedia(t); break; }
@@ -2441,11 +2437,12 @@ async function startCamera() {
   video.srcObject = stream; video.muted = true; video.defaultMuted = true; video.setAttribute('playsinline', ''); video.setAttribute('webkit-playsinline', '');
   try { await video.play(); } catch (e) { /* автозапуск может быть отложен */ }
   if (!(await waitFor(() => video.videoWidth > 0, 5000))) throw new Error('камера не отдаёт кадры');
-  const st = stream.getVideoTracks()[0].getSettings ? stream.getVideoTracks()[0].getSettings() : {};
+  const st = await wkCamAfter(stream);
   S.srcKind = 'camera';
   S.camInfo = video.videoWidth + '×' + video.videoHeight + (st.frameRate ? ' · ' + Math.round(st.frameRate) + ' fps' : '');
   if (video.videoWidth < 1280 || (st.frameRate && st.frameRate < 50)) S.camNote = 'Лучше FHD 60 fps: включи этот режим в настройках камеры телефона (1920×1080, 60 fps).';
   else S.camNote = '';
+  wkCamNote();
 }
 async function loadFile(file) {
   stopSource();
@@ -2525,6 +2522,7 @@ function buildSource(box) {
       el('button', { class: 'big' + (S.srcKind === 'file' ? ' on' : ''), type: 'button', onclick: () => $('fileIn').click() }, el('span', { class: 'bi', text: '🎞' }), 'Видеофайл')),
     status);
   if (S.srcKind === 'file') box.append(fileControls());
+  wkCamCard(box);
   wkSourceCard(box);
   buildProfileCard(box);
 }
@@ -4508,7 +4506,7 @@ const WkMotion = (() => {
       this.cam = cam; this.cal = cal;
       this.ref = { th: att0 ? att0.th : 0, ph: att0 ? att0.ph : 0, hd: att0 ? att0.hd : 0 };
       this.alpha = 0; this.psiOff = 0; this.Xc = 0; this.Zc = 0; this.kappa = 0;
-      this.alphaManual = 0; this.kappaManual = 0; this.autoRoad = opt.autoRoad !== false;
+      this.alphaManual = 0; this.kappaManual = 0; this.psiManual = 0; this.yawSign = 1; this.autoRoad = opt.autoRoad !== false;
       this.lim = { alpha: 0.10, psi: 0.6, X: 7, kappa: 1 / 25 };
       this.vis = { n: 0, q: 0, t: -9 };
     }
@@ -4517,7 +4515,7 @@ const WkMotion = (() => {
       const c = this.cal, r = this.ref, alpha = this.alpha + this.alphaManual;
       const th = att ? c.th + (att.th - r.th) + alpha : c.th + alpha;
       const ph = att ? c.ph + (att.ph - r.ph) : c.ph;
-      const psi = (att ? c.psi + Wk.wrap(att.hd - r.hd) : c.psi) + this.psiOff;
+      const psi = (att ? c.psi + this.yawSign * Wk.wrap(att.hd - r.hd) : c.psi) + this.psiOff + this.psiManual;
       return { psi, th, ph, Xc: this.Xc, Zc: zc != null ? zc : this.Zc };
     }
     // поправка по визуальной подгонке дороги: d = { dX, dPsi, dTh, kappa } относительно текущей позы; q — качество 0..1
@@ -4530,6 +4528,8 @@ const WkMotion = (() => {
       if (d.kappa != null) this.kappa = cl(this.kappa + 0.5 * g * (d.kappa - this.kappa), -L.kappa, L.kappa);
       this.vis.n++; this.vis.q = 0.9 * this.vis.q + 0.1 * q; this.vis.t = t;
     }
+    // «телефон сейчас смотрит вдоль дороги, как при калибровке»: курсовой отсчёт и поправки заново
+    alignYaw(att) { if (att && isFinite(att.hd)) this.ref.hd = att.hd; this.psiOff = 0; this.Xc = 0; this.psiManual = 0; }
     get kap() { return this.kappa + this.kappaManual; }
     get gradePct() { return 100 * Math.tan(this.alpha + this.alphaManual); }
   }
@@ -4988,11 +4988,11 @@ if (typeof module !== 'undefined') module.exports = WkTracks;
  * Зависит от: S, R, video, SW, SH, toast, frameTime (приложение) и Wk, WkImu, WkMotion.
  */
 const WK_LS = 'ss_walk';
-S.walk = { on: false, H: 1.55, curb: 0.5, stride: 0.78, mode: 'C1', stab: false, imuSrc: 'auto', imuDelay: 0, gps: true, grade: 0, curv: 0, autoRoad: true, grid: true, zoom: 1.1, tau: 0.45 };
+S.walk = { on: false, H: 1.55, curb: 0.5, stride: 0.78, mode: 'C1', stab: false, imuSrc: 'auto', imuDelay: 0, gps: true, grade: 0, curv: 0, autoRoad: true, grid: true, zoom: 1.1, tau: 0.45, yawSign: 1, psiTrim: 0 };
 (function wkLoadSettings() {
-  try { const o = JSON.parse(localStorage.getItem(WK_LS) || '{}'); for (const k of Object.keys(S.walk)) if (k !== 'on' && k !== 'stab' && k !== 'grade' && k !== 'curv' && o[k] != null && typeof o[k] === typeof S.walk[k]) S.walk[k] = o[k]; } catch (_) {}
+  try { const o = JSON.parse(localStorage.getItem(WK_LS) || '{}'); for (const k of Object.keys(S.walk)) if (k !== 'on' && k !== 'stab' && k !== 'grade' && k !== 'curv' && k !== 'psiTrim' && o[k] != null && typeof o[k] === typeof S.walk[k]) S.walk[k] = o[k]; } catch (_) {}
 })();
-function wkSave() { try { const o = Object.assign({}, S.walk); delete o.on; delete o.stab; delete o.grade; delete o.curv; localStorage.setItem(WK_LS, JSON.stringify(o)); } catch (_) {} }
+function wkSave() { try { const o = Object.assign({}, S.walk); delete o.on; delete o.stab; delete o.grade; delete o.curv; delete o.psiTrim; localStorage.setItem(WK_LS, JSON.stringify(o)); } catch (_) {} }
 
 const WKR = { att0: null, run: null };   // служебное состояние режима: ориентация при заморозке кадра, объекты текущего замера
 const WKS = {
@@ -5210,6 +5210,8 @@ async function startWalk() {
       if (!a0) toast('Ориентация при заморозке кадра не записана — держи телефон так же, как при калибровке.', 5000);
     }
     const eng = new WkMotion.PoseEngine(C.cam, C.cal, att0, { autoRoad: W.autoRoad });
+    eng.yawSign = W.yawSign;
+    if (S.srcKind === 'camera' && WKS.on) { const an = wkAtt(performance.now() / 1000); if (an) eng.alignYaw(an); }   // курс считаем от направления на момент старта: телефон смотрит вдоль дороги
     const odo = new WkMotion.Odo({ stride: W.stride });
     const X = WKR.run = {
       cam: C.cam, cal: C.cal, roadX: C.roadX, fit: C.fit, eng, odo, vo: new WkVis.VisOdo(C.cam, aw, ah, {}), tk: new WkTracks.Tracker(C.cam, aw, ah, { mode: W.mode }),
@@ -5273,7 +5275,7 @@ function processFrameWalk(now, md) {
     else if (st.stationary && t - X.tStep > 0.3) { odo.zupt(t); X.tStep = t; }
   }
   // поза камеры
-  eng.alphaManual = Math.atan(W.grade / 100); eng.kappaManual = W.curv; eng.autoRoad = W.autoRoad;
+  eng.alphaManual = Math.atan(W.grade / 100); eng.kappaManual = W.curv; eng.yawSign = W.yawSign; eng.psiManual = W.psiTrim * Wk.D2R; eng.autoRoad = W.autoRoad;
   const att = cam && WKS.on ? wkAtt(t - lat + W.imuDelay / 1000) : null; X.att = att;
   const pose = eng.pose(att, odo.w); pose.ax = Wk.axes(pose.psi, pose.th, pose.ph);
   const excl = (x, y) => { for (const c of tk.tracks) if (x > c.x - 0.7 * c.bw && x < c.x + 0.7 * c.bw && y > c.y - 1.1 * c.bh && y < c.y + 8) return true; return false; };
@@ -5283,10 +5285,11 @@ function processFrameWalk(now, md) {
     const preds = [], kp = eng.kap;
     for (let ki = 0; ki < X.roadX.length; ki++) for (const Z of [8, 11, 14, 18, 23, 29, 36]) {
       const pr = Wk.project(X.cam, pose, X.roadX[ki] + kp * Z * Z * 0.5, pose.Zc + Z); if (!pr) continue;
-      preds.push({ k: ki, x: pr[0] * ah + aw / 2, y: pr[1] * ah + ah / 2, win: 9 + 70 / Z + Math.min(30, 14 * Math.max(0, t - eng.vis.t - 0.3)), wm: Math.max(1.5, X.cam.f * ah * 0.13 / Z) });
+      preds.push({ k: ki, x: pr[0] * ah + aw / 2, y: pr[1] * ah + ah / 2, win: 9 + 70 / Z + Math.min(100, 30 * Math.max(0, t - eng.vis.t - 0.3)), wm: Math.max(1.5, X.cam.f * ah * 0.13 / Z) });
     }
     const hits = WkVis.lineSamples(gray, aw, ah, preds, 6).filter(h => !excl(h.x, h.y));
     const fit = WkVis.roadFit(X.cam, pose, { X: X.roadX }, hits.map(h => ({ k: h.k, u: (h.x - aw / 2) / ah, v: (h.y - ah / 2) / ah, w: h.conf })), { ah, kappaPrev: kp });
+    if (!X.hinted && X.roadN === 0 && t - X.t0 > 5) { X.hinted = true; toast('Дорога в кадре не найдена. Держи телефон вдоль дороги и нажми «дорога» в верхней панели — линии выровняются по текущему направлению.', 7000); }
     if (fit && fit.q > 0.05) { fit.d.kappa -= eng.kappaManual; eng.applyRoad(fit.d, fit.q, t, X.k < 90 ? 4 : 1); X.roadN++; }
   }
   const poseNow = eng.pose(att, odo.w); poseNow.ax = Wk.axes(poseNow.psi, poseNow.th, poseNow.ph); X.pose = poseNow;
@@ -5469,6 +5472,14 @@ function wkExportLog() {
 }
 /* ==== WALK:RUN:END ==== */
 
+// выровнять воображаемую дорогу: телефон сейчас смотрит вдоль дороги — курс и поправки заново
+function wkAlign() {
+  const X = WKR.run; if (!X) return;
+  const an = S.srcKind === 'camera' && WKS.on ? wkAtt(performance.now() / 1000 - 0.05) : null;
+  X.eng.alignYaw(an); S.walk.psiTrim = 0; wkFlush();
+  toast(an ? 'Дорога выровнена по текущему направлению телефона.' : 'Поправки курса сброшены.', 2200);
+}
+
 /* ==== WALK:UI:BEGIN ====
  * Режим «Ходьба», часть 6в: интерфейс — выбор режима, настройки ходьбы, кнопка стабилизации в камере, панель в замере, проверка калибровки.
  */
@@ -5478,7 +5489,7 @@ function wkSensText() {
   if (!WKS.on) return 'Датчики выключены.';
   const st = WKS.steps.out, att = WKS.tA ? wkAtt(WKS.tA) : null, L = [];
   L.push(fmt(WKS.hz, 0) + ' Гц · ориентация: ' + wkSrcName() + (WKS.rosErr && !WKS.useRos ? ' (готовый: ' + WKS.rosErr + ')' : '') + (WKS.dmN === 0 ? ' · данных нет!' : ''));
-  if (att) L.push('наклон камеры ' + fmt(wkDeg(att.th), 1) + '° (+вниз) · крен ' + fmt(wkDeg(att.ph), 1) + '°');
+  if (att) L.push('наклон камеры ' + fmt(wkDeg(att.th), 1) + '° (+вниз) · крен ' + fmt(wkDeg(att.ph), 1) + '° · курс ' + fmt((wkDeg(att.hd) + 360) % 360, 0) + '°');
   L.push('шаги: ' + (st.walking ? fmt(st.cadence, 2) + ' /с' : (st.stationary ? 'стою' : '—')) + ' · GPS: ' + (!S.walk.gps ? 'выкл' : (WKS.gps ? (WKS.gps.speed != null ? fmt(WKS.gps.speed * 3.6, 1) + ' км/ч' : 'без скорости (стоишь?)') + ', точность ±' + fmt(WKS.gps.acc, 0) + ' м' : (WKS.gpsErr || (WKS.gpsId ? 'ищу сигнал…' : 'не запущен')))));
   return L.join('\n');
 }
@@ -5512,6 +5523,7 @@ function wkSourceCard(box) {
   card.append(
     switchRow('Стабилизация картинки', 'по гироскопу: меньше дрожит видео и метки (края чуть обрезаются)', W.stab, v => { if (v !== W.stab) wkToggleStab(); }),
     switchRow('Подгонка по линиям дороги', 'слабо поправляет поворот, уклон и положение по разметке', W.autoRoad, v => { W.autoRoad = v; wkSave(); }),
+    switchRow('Курс: инвертировать', 'проверка: поверни телефон вправо — «курс» должен расти; если падает, включи', W.yawSign < 0, v => { W.yawSign = v ? -1 : 1; wkSave(); }),
     switchRow('GPS: скорость ходьбы', 'дополняет шаги и картинку; нужен вид на небо', W.gps, v => { W.gps = v; wkSave(); if (v) wkGpsStart(); else wkGpsStop(); }));
   const sens = el('div', { class: 'status', style: 'white-space:pre-line', text: wkSensText() });
   card.append(sens, el('button', { class: 'btn small', type: 'button', onclick: async () => { const ok = await wkSensStart(); if (ok) { wkRosStart(); toast('Датчики включены.', 1800); } } }, WKS.on ? '↻ Перезапустить датчики' : 'Включить датчики'));
@@ -5551,6 +5563,9 @@ function wkRunSheet() {
   c.append(rng('Уклон дороги (ручная поправка)', W.grade, -12, 12, 0.5, v => (v > 0 ? '+' : '') + fmt(v, 1) + ' %', v => { W.grade = v; }));
   c.append(el('p', { class: 'wksub', text: 'Плюс — дорога впереди идёт в горку. 0 — только автоподгонка по линиям. Ошибка в уклоне в 1° даёт ≈ 10–25 % ошибки скорости на 20 м, поэтому на горке/спуске лучше подкрутить вручную.' }));
   c.append(rng('Кривизна дороги (ручная)', Math.round(W.curv * 1000), -30, 30, 1, v => (v === 0 ? 'прямая' : (v > 0 ? 'вправо' : 'влево') + ' · R ≈ ' + Math.round(1000 / Math.abs(v)) + ' м'), v => { W.curv = v / 1000; }));
+  c.append(rng('Поворот дороги (ручная подгонка)', W.psiTrim, -20, 20, 0.5, v => (v > 0 ? '+' : '') + fmt(v, 1) + '°', v => { W.psiTrim = v; }));
+  c.append(el('p', { class: 'wksub', text: 'Если воображаемая дорога на экране «уехала» вбок: держи телефон вдоль дороги и нажми «Выровнять по дороге». Ползунок — для точной подгонки на глаз.' }));
+  c.append(el('button', { class: 'btn', type: 'button', onclick: () => { wkAlign(); closeSheet(); } }, '⟲ Выровнять по дороге'));
   c.append(el('div', { class: 'card' }, el('div', { class: 'ct', text: 'Ворота' }), seg(['C1 · на дороге', 'C2 · у камеры'], W.mode === 'C1' ? 0 : 1, i => {
     W.mode = i === 0 ? 'C1' : 'C2'; wkSave(); if (X) { wkFlush(); X.tk.cfg.mode = W.mode; } closeSheet(); toast('Режим ворот: ' + W.mode, 1800);
   })));
@@ -5564,7 +5579,7 @@ function wkRunSheet() {
   const acts = el('div', { class: 'col' });
   acts.append(
     el('button', { class: 'btn', type: 'button', onclick: () => { if (X) { X.w0 = X.odo.w; wkHud(); } closeSheet(); } }, '⟲ Обнулить «Пройдено»'),
-    el('button', { class: 'btn', type: 'button', onclick: () => { if (X) { const e = X.eng; e.alpha = 0; e.psiOff = 0; e.Xc = 0; e.kappa = 0; W.grade = 0; W.curv = 0; wkFlush(); } closeSheet(); toast('Поправки позы сброшены.', 1800); } }, '↺ Сбросить поправки позы'),
+    el('button', { class: 'btn', type: 'button', onclick: () => { if (X) { const e = X.eng; e.alpha = 0; e.psiOff = 0; e.Xc = 0; e.kappa = 0; W.psiTrim = 0; W.grade = 0; W.curv = 0; wkFlush(); } closeSheet(); toast('Поправки позы сброшены.', 1800); } }, '↺ Сбросить поправки позы'),
     el('button', { class: 'btn', type: 'button', onclick: wkExportLog }, '⬇ Журнал ходьбы (JSON)'));
   c.append(acts);
   openSheet('Ходьба', c);
@@ -5578,14 +5593,79 @@ function wkInitUi() {
   stage.append(el('div', { id: 'wkBar', hidden: true }, el('button', { id: 'wkStabBtn', class: 'wkb', type: 'button', onclick: wkToggleStab }, el('span', { text: 'Стабилизация: выкл' }))));
   const chip = (id, v, s, btn) => el(btn ? 'button' : 'div', { class: 'chip' + (btn ? ' btn' : ''), id, type: btn ? 'button' : null }, el('b', { text: v }), el('small', { text: s }));
   const row = el('div', { class: 'hrow', id: 'hudWalk', hidden: true },
-    chip('chSelf', '—', 'я, км/ч'), chip('chDist', '—', 'пройдено, м'), chip('chGrade', '—', 'уклон %', true), chip('chRoad', '—', 'дорога'), chip('chSens', '—', 'Гц датч.'), chip('chDet', '—', 'детектор'),
+    chip('chSelf', '—', 'я, км/ч'), chip('chDist', '—', 'пройдено, м'), chip('chGrade', '—', 'уклон %', true), chip('chRoad', '—', 'дорога', true), chip('chSens', '—', 'Гц датч.'), chip('chDet', '—', 'детектор'),
     el('button', { class: 'chip btn', id: 'btnWkStab', type: 'button' }, '🎥 Стаб.: выкл'), el('button', { class: 'chip btn', id: 'btnWkMenu', type: 'button', 'aria-label': 'Настройки ходьбы' }, '🚶'));
   $('hud').firstElementChild.after(row);
-  $('chGrade').addEventListener('click', wkRunSheet); $('btnWkMenu').addEventListener('click', wkRunSheet); $('btnWkStab').addEventListener('click', wkToggleStab);
+  $('chGrade').addEventListener('click', wkRunSheet); $('btnWkMenu').addEventListener('click', wkRunSheet); $('chRoad').addEventListener('click', wkAlign); $('btnWkStab').addEventListener('click', wkToggleStab);
   wkEisSync();
 }
 wkInitUi();
 /* ==== WALK:UI:END ==== */
+
+/* ==== WALK:CAM:BEGIN ====
+ * Выбор камеры: частота кадров (30/60), разрешение и объектив. Chrome по умолчанию часто отдаёт 30 fps, даже если в камере телефона включено 60 —
+ * поэтому просим частоту «строго» (exact), потом пробуем применить её к уже открытой камере, и показываем, что реально получилось. */
+const WKC_LS = 'ss_cam';
+S.cam = { fps: 60, res: 1080, dev: '' };
+(function wkCamLoad() { try { const o = JSON.parse(localStorage.getItem(WKC_LS) || '{}'); if (o.fps === 30 || o.fps === 60) S.cam.fps = o.fps; if (o.res === 720 || o.res === 1080) S.cam.res = o.res; if (typeof o.dev === 'string') S.cam.dev = o.dev; } catch (_) {} })();
+function wkCamSave() { try { localStorage.setItem(WKC_LS, JSON.stringify(S.cam)); } catch (_) {} }
+const WKC = { devs: [], max: null, got: null, req: null, tried: '' };
+async function wkCamList() {
+  try { const d = await navigator.mediaDevices.enumerateDevices(); WKC.devs = d.filter(x => x.kind === 'videoinput'); } catch (_) { WKC.devs = []; }
+}
+// список попыток getUserMedia: сначала строго нужная частота, потом мягче
+function wkCamTries(c) {
+  const C = S.cam, w = C.res === 720 ? 1280 : 1920, h = C.res === 720 ? 720 : 1080, fps = C.fps;
+  const base = C.dev ? { deviceId: { exact: C.dev } } : { facingMode: { ideal: 'environment' } };
+  const mk = (res, f) => { const v = Object.assign({}, base); if (res) { v.width = { ideal: w }; v.height = { ideal: h }; } if (f) v.frameRate = f; return { audio: false, video: v }; };
+  WKC.req = fps;
+  return [mk(true, { exact: fps }), mk(false, { exact: fps }), mk(true, { ideal: fps, min: Math.min(fps, 24) }), mk(true, { ideal: fps }), mk(false, null), { audio: false, video: true }];
+}
+// после открытия: узнаём возможности камеры и, если частота ниже нужной, пробуем поднять её на лету
+async function wkCamAfter(stream) {
+  const tr = stream.getVideoTracks()[0]; let st = tr.getSettings ? tr.getSettings() : {};
+  try { const cp = tr.getCapabilities ? tr.getCapabilities() : null; WKC.max = cp && cp.frameRate ? cp.frameRate.max : null; } catch (_) { WKC.max = null; }
+  const want = S.cam.fps;
+  if (st.frameRate && st.frameRate < want - 2 && (WKC.max == null || WKC.max >= want - 1) && tr.applyConstraints) {
+    for (const cons of [{ frameRate: { exact: want } }, { frameRate: want }]) {
+      try { await tr.applyConstraints(cons); st = tr.getSettings(); if (st.frameRate >= want - 2) break; } catch (_) {}
+    }
+  }
+  WKC.got = st.frameRate || null;
+  wkCamList();
+  return st;
+}
+function wkCamNote() {
+  const f = WKC.got, want = S.cam.fps;
+  if (want <= 30) { S.camNote = ''; return; }   // 30 fps выбраны сознательно — не ворчим
+  if (f && f < 50 && want >= 60) {
+    S.camNote = 'Браузер отдаёт ' + Math.round(f) + ' fps' + (WKC.max ? ' (камера заявляет максимум ' + Math.round(WKC.max) + ')' : '') + '. ' + (WKC.max && WKC.max < 55 ? 'Эта камера/режим 60 fps в браузере не даёт: попробуй другой объектив или 720p.' : 'Попробуй 720p или основной объектив; в сумерках камера сама снижает частоту из-за выдержки.');
+  } else if (S.camNote && f && f >= 50 && S.camInfo && video.videoWidth >= 1280) S.camNote = '';
+}
+function wkCamCard(box) {
+  const C = S.cam, card = el('div', { class: 'card wkcard' }, el('div', { class: 'ct', text: 'Камера: частота кадров и объектив' }));
+  card.append(el('div', { class: 'wksub', text: 'Частота кадров' }), seg(['30 fps', '60 fps'], C.fps === 60 ? 1 : 0, i => { C.fps = i === 1 ? 60 : 30; wkCamSave(); }));
+  card.append(el('div', { class: 'wksub', text: 'Разрешение (для замера хватает 720p; 60 fps чаще доступно именно там)' }), seg(['720p', '1080p'], C.res === 720 ? 0 : 1, i => { C.res = i === 0 ? 720 : 1080; wkCamSave(); }));
+  const sel = el('select', { class: 'wksel' });
+  const fill = () => {
+    sel.textContent = '';
+    sel.append(el('option', { value: '', text: 'Основная задняя (по умолчанию)' }));
+    WKC.devs.forEach((d, i) => sel.append(el('option', { value: d.deviceId, text: d.label || ('Камера ' + (i + 1)) })));
+    sel.value = C.dev; if (sel.value !== C.dev) sel.value = '';
+  };
+  fill(); wkCamList().then(fill);
+  sel.addEventListener('change', () => { C.dev = sel.value; wkCamSave(); });
+  card.append(el('div', { class: 'wksub', text: 'Объектив (названия видны после того, как камера уже разрешена)' }), sel);
+  const info = el('div', { class: 'status', text: S.srcKind === 'camera' ? ('Сейчас: ' + S.camInfo + (WKC.max ? ' · камера заявляет до ' + Math.round(WKC.max) + ' fps' : '')) : 'Камера не включена: настройки применятся при нажатии «Камера».' });
+  card.append(info, el('button', { class: 'btn', type: 'button', onclick: async () => {
+    info.textContent = 'Перезапускаю камеру…';
+    try { await startCamera(); setStatus('Камера включена: ' + S.camInfo + (S.camNote ? '. ' + S.camNote : ''), S.camNote ? 'warn' : 'ok'); renderStep(true); initLevelIfOn(); toast('Камера: ' + S.camInfo, 3500); }
+    catch (e) { info.textContent = camErrorText(e); }
+  } }, '↻ Применить и перезапустить камеру'));
+  box.append(card);
+}
+if (typeof module !== 'undefined') module.exports = {};
+/* ==== WALK:CAM:END ==== */
 
 
 /* =====================  Запуск приложения  ===================== */
