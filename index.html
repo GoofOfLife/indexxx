@@ -973,6 +973,7 @@ function vdOnMsg(m, end) {
   else if (m.type === 'warmed') { if (VD.wres) VD.wres(); }
   else if (m.type === 'res') {
     if (VD.once && VD.once.id === m.id) { const o = VD.once; VD.once = null; o.res(m); return; }
+    if (WKR.run && WKR.run.det.rq && WKR.run.det.rq.id === m.id) { wkOnDet(m); return; }   // ответ детектора для режима «Ходьба»
     const rq = VD.rq;
     if (rq && rq.id === m.id) { VD.rq = null; VD.wErr = 0; if (rq.stab === R.stab) vdApply(m, rq); }
   } else if (m.type === 'err') {
@@ -2524,6 +2525,7 @@ function buildSource(box) {
       el('button', { class: 'big' + (S.srcKind === 'file' ? ' on' : ''), type: 'button', onclick: () => $('fileIn').click() }, el('span', { class: 'bi', text: '🎞' }), 'Видеофайл')),
     status);
   if (S.srcKind === 'file') box.append(fileControls());
+  wkSourceCard(box);
   buildProfileCard(box);
 }
 $('fileIn').addEventListener('change', async e => {
@@ -2566,6 +2568,7 @@ function doFreeze() {
     freezeFrame();
   } catch (e) { toast(e.message); return; }
   S.showFrozen = true;
+  wkOnFreeze();
   setViewFrame(S.frozen.w, S.frozen.h);
   const asp = S.frozen.w / S.frozen.h;
   if (S.profAspect && Math.abs(asp / S.profAspect - 1) > 0.05) { resetPositions(); S.profAspect = null; toast('Профиль снят в другой ориентации кадра — числа сохранены, точки расставь заново.', 5000); }
@@ -2725,7 +2728,7 @@ function buildCheck(box) {
       for (const w of ws) { warn = true; st.append(el('div', { text: '⚠ ' + lanePre(i) + w })); }
     });
     st.className = 'status ' + (warn ? 'warn' : 'ok');
-    try {
+    if (S.walk.on) wkCheckCard(st); else try {
       prep = prepareAnalysis();
       st.append(el('div', { class: prep.stabOk ? '' : 'badtxt', text: prep.stabOk ? '✓ Стабилизация: ' + prep.stab.nb + ' опорных блоков вне дороги.' : '⚠ Мало неподвижных деталей вне дороги (здания, деревья, столбы): стабилизация недоступна, держи телефон очень ровно или выбери кадр с большим фоном.' }));
     } catch (e) { prep = null; }
@@ -2784,6 +2787,7 @@ function renderStep(keepStage) {
   video.style.visibility = S.srcKind && wasLive ? 'visible' : 'hidden';
   if (!S.showFrozen) hideLoupe();
   updateLevelVisibility();
+  wkEisSync();
   $('panel').scrollTop = 0;
   if (S.showFrozen && V.w !== S.frozen.w) setViewFrame(S.frozen.w, S.frozen.h);
   laneTabs();
@@ -2973,6 +2977,7 @@ function openSettings() {
     switchRow('Распознавать номера (OCR)', 'экспериментально · для нарушителей · Tesseract.js подгружается из сети', S.viol.ocr, v => { S.viol.ocr = v; if (v) toast('OCR включён: библиотека загрузится при первом номере.', 3500); }));
   if (S.srcKind === 'camera' || !S.srcKind) c.append(el('div', { class: 'swrow' }, el('span', { class: 'swt' }, el('b', { text: 'Индикатор крена' }), el('small', { text: 'по датчикам телефона — для ровного удержания' })), levelButton()));
   const acts = el('div', { class: 'col' });
+  wkSettingsActs(acts);
   if (S.mode === 'run') acts.append(el('button', { class: 'btn', type: 'button', onclick: () => { closeSheet(); reconfigure(); } }, '⚙ Перенастроить'));
   acts.append(
     el('button', { class: 'btn', type: 'button', onclick: exportCsv }, '⬇ Экспорт CSV'),
@@ -3550,6 +3555,7 @@ function exportViolCsv() {
 
 /* ---------- Мастер: необязательный шаг «Нарушители» ---------- */
 function buildViol(box) {
+  if (S.walk.on) { S.viol.on = false; box.append(el('p', { class: 'fine', text: 'В режиме «Ходьба» нарушители не используются. Нажми «Далее».' })); return; }
   const V = S.viol, g = V.gates; fixSet(g);
   box.append(switchRow('Фиксировать грубые превышения', '2 ворота · скорость = расстояние ÷ время · фото в «Нарушители»', V.on, v => { V.on = v; renderStep(true); }));
   if (!V.on) { box.append(el('p', { class: 'fine', text: 'Шаг необязательный. Выключено — работает только обычный замер, нарушители не записываются.' })); return; }
@@ -3673,6 +3679,7 @@ function onFrame(now, md) {
 function setMsg(t) { const m = $('stageMsg'); if (t) { m.textContent = t; m.hidden = false; } else m.hidden = true; }
 
 async function startRun() {
+  if (S.walk.on) return startWalk();
   recalc();
   const A = calsOk();
   if (!A.ok) { toast(A.msg); return; }
@@ -3723,6 +3730,7 @@ async function startRun() {
   btn.disabled = false;
 }
 function flushTracks() {
+  if (S.walk.on) { wkFlush(); return; }
   if (!R.trk) return;
   if (R.fg) { R.fg.st.clear(); R.fg.ev = []; }
   const all = R.trk.tracks.concat(R.trk.limbo); for (const tr of all) tr.why = tr.why || 'flush';
@@ -3736,7 +3744,8 @@ function recFrame(now) {
   REC.raf = requestAnimationFrame(recFrame);
   if (now - REC.last < 33) return; REC.last = now;   // ≈30 кадров/с, чтобы не тормозить анализ
   if (video.videoWidth) {
-    REC.g.drawImage(video, 0, 0, REC.c.width, REC.c.height);
+    if (S.walk.on && WKE.A) { const A = WKE.A, K = REC.c.width / (V.w * V.k); REC.g.setTransform(A.a, A.b, A.c, A.d, K * (A.a * V.tx + A.c * V.ty + A.e - V.tx), K * (A.b * V.tx + A.d * V.ty + A.f - V.ty)); REC.g.drawImage(video, 0, 0, REC.c.width, REC.c.height); REC.g.setTransform(1, 0, 0, 1, 0, 0); }   // запись повторяет стабилизацию картинки
+    else REC.g.drawImage(video, 0, 0, REC.c.width, REC.c.height);
     if (S.mode === 'run') REC.g.drawImage(cv, V.tx * DPR, V.ty * DPR, V.w * V.k * DPR, V.h * V.k * DPR, 0, 0, REC.c.width, REC.c.height);   // плашки и линии — ровно в границах кадра видео
   }
   if (now - REC.lbl > 500) { REC.lbl = now; const t = Math.floor((now - REC.t0) / 1000); $('btnRec').textContent = '⏹ ' + Math.floor(t / 60) + ':' + pad2(t % 60); }
@@ -3777,7 +3786,7 @@ function recDone() {
     el('a', { class: 'btn', href: REC.url, download: name }, '⬇ Скачать видео (' + ext.toUpperCase() + ')')));
 }
 function stopRun() {
-  stopRec(); R.running = false; cancelFrame(); wakeOff();
+  stopRec(); R.running = false; cancelFrame(); wakeOff(); wkStop();
 }
 function reconfigure() {
   flushTracks(); stopRun();
@@ -3879,6 +3888,7 @@ function fpsNow() {
 }
 
 function processFrame(now, md) {
+  if (S.walk.on) return processFrameWalk(now, md);
   if (R.paused || R.ended) return;
   const tW0 = performance.now();
   const vw = video.videoWidth, vh = video.videoHeight;
@@ -3994,6 +4004,7 @@ function refineBlob(b, rc) {
 
 /* =====================  Рисование режима замера  ===================== */
 function drawRun() {
+  if (S.walk.on) return drawWalk();
   const g = ctx;
   g.setTransform(DPR, 0, 0, DPR, 0, 0); g.clearRect(0, 0, SW, SH);
   if (!R.geo || !S.frozen) return;
@@ -4095,6 +4106,7 @@ function updateHud(force) {
   st.lastElementChild.textContent = s === 'ok' ? 'стаб.' : (s === 'off' ? 'без стаб.' : (s === 'init' ? 'поиск…' : (s === 'coast' ? 'держу…' : 'сдвиг!')));
   $('chLimit').firstElementChild.textContent = String(S.limit);
   $('chCnt').firstElementChild.textContent = String(S.passes.length);
+  if (S.walk.on) wkHud();
 }
 $('drawerBar').addEventListener('click', () => { $('drawer').classList.toggle('open'); });
 $('chLimit').addEventListener('click', () => { openSheet('Лимит скорости', buildLimitControls(() => {}, true)); });
@@ -4103,6 +4115,1471 @@ $('btnRec').addEventListener('click', () => { if (REC.on) stopRec(); else startR
 $('btnMenu').addEventListener('click', openSettings);
 $('btnReconf').addEventListener('click', reconfigure);
 $('btnRestart').addEventListener('click', restartFile);
+
+/* =====================  Режим «Ходьба»  ===================== */
+/* ==== WALK:CAMERA:BEGIN ====
+ * Режим «Ходьба», часть 1: физическая модель камеры над плоской дорогой.
+ * Система дороги: X вправо, Y ВНИЗ, Z вперёд вдоль дороги (правая тройка, как у камеры). Земля: Y = 0, камера в (Xc, −H, Zc).
+ * Углы камеры относительно дороги: psi — рыскание (+ вправо), th — тангаж (+ вниз), ph — крен.
+ * Пиксели: u вправо, v ВНИЗ от центра кадра, в долях ВЫСОТЫ кадра (u = (x−0.5)·asp, v = y−0.5); f — фокус в тех же единицах.
+ * Модель калибровки: s(v) = H·cosψ·(f·cosθ − v·sinθ)/(f·sinθ + v·cosθ) — та же проективная зависимость, что и в makeCalib, но с физическим смыслом.
+ */
+const Wk = (() => {
+  const D2R = Math.PI / 180, R2D = 180 / Math.PI;
+  const cl = (v, a, b) => (v < a ? a : (v > b ? b : v));
+  const wrap = a => { while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; };
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const med = a => { if (!a.length) return 0; const s = Array.from(a).sort((x, y) => x - y), n = s.length; return n % 2 ? s[n >> 1] : 0.5 * (s[n / 2 - 1] + s[n / 2]); };
+
+  // решение малой СЛАУ n×n (гаусс с выбором ведущего); null — вырождена
+  function solveN(A, b) {
+    const n = b.length, M = A.map((r, i) => r.concat(b[i]));
+    for (let c = 0; c < n; c++) {
+      let p = c;
+      for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+      if (Math.abs(M[p][c]) < 1e-14) return null;
+      if (p !== c) { const t = M[p]; M[p] = M[c]; M[c] = t; }
+      for (let r = c + 1; r < n; r++) { const f = M[r][c] / M[c][c]; for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k]; }
+    }
+    const x = new Array(n).fill(0);
+    for (let i = n - 1; i >= 0; i--) { let s = M[i][n]; for (let k = i + 1; k < n; k++) s -= M[i][k] * x[k]; x[i] = s / M[i][i]; }
+    return x;
+  }
+  // Левенберг–Марквардт с численным якобианом. fn(p) → массив невязок; lo/hi — границы параметров
+  function lm(fn, p0, lo, hi, iters) {
+    let p = p0.slice(), r = fn(p), cost = r.reduce((s, v) => s + v * v, 0), lam = 1e-3;
+    const n = p.length;
+    for (let it = 0; it < (iters || 40); it++) {
+      const J = [];
+      for (let j = 0; j < n; j++) {
+        const h = Math.max(1e-6, 1e-4 * Math.abs(p[j])), q = p.slice(); q[j] += h;
+        const rq = fn(q); J.push(rq.map((v, i) => (v - r[i]) / h));
+      }
+      const A = [], g = [];
+      for (let a = 0; a < n; a++) { A.push([]); let gs = 0; for (let b = 0; b < n; b++) { let s = 0; for (let i = 0; i < r.length; i++) s += J[a][i] * J[b][i]; A[a].push(s); } for (let i = 0; i < r.length; i++) gs += J[a][i] * r[i]; g.push(-gs); }
+      let ok = false;
+      for (let tr = 0; tr < 8; tr++) {
+        const B = A.map((row, i) => row.map((v, j) => v + (i === j ? lam * (A[i][i] + 1e-9) : 0)));
+        const d = solveN(B, g);
+        if (!d) { lam *= 10; continue; }
+        const q = p.map((v, i) => cl(v + d[i], lo ? lo[i] : -Infinity, hi ? hi[i] : Infinity)), rq = fn(q), c2 = rq.reduce((s, v) => s + v * v, 0);
+        if (c2 < cost) { const dn = Math.hypot(...d.map((v, i) => v / (Math.abs(p[i]) + 1e-3))); p = q; r = rq; const dc = cost - c2; cost = c2; lam = Math.max(lam / 5, 1e-9); ok = true; if (dn < 1e-7 || dc < 1e-14) return { p, cost, r }; break; }
+        lam *= 8;
+      }
+      if (!ok) break;
+    }
+    return { p, cost, r };
+  }
+
+  // оси камеры в системе дороги: r — вправо, d — вниз, f — вперёд
+  function axes(psi, th, ph) {
+    const sp = Math.sin(psi), cp = Math.cos(psi), st = Math.sin(th), ct = Math.cos(th);
+    const f = [sp * ct, st, cp * ct], r0 = [cp, 0, -sp], d0 = [-st * sp, ct, -st * cp];
+    const sf = Math.sin(ph), cf = Math.cos(ph);
+    return { r: [r0[0] * cf + d0[0] * sf, r0[1] * cf + d0[1] * sf, r0[2] * cf + d0[2] * sf], d: [-r0[0] * sf + d0[0] * cf, -r0[1] * sf + d0[1] * cf, -r0[2] * sf + d0[2] * cf], f };
+  }
+  // cam = { f, H }; pose = { psi, th, ph, Xc, Zc, ax? }. Точка земли (X, Z) → [u, v, глубина] или null
+  function project(cam, pose, X, Z, Y) {
+    const A = pose.ax || axes(pose.psi, pose.th, pose.ph);
+    const d = [X - pose.Xc, (Y || 0) + cam.H, Z - pose.Zc];
+    const z = dot(A.f, d); if (z < 0.05) return null;
+    return [cam.f * dot(A.r, d) / z, cam.f * dot(A.d, d) / z, z];
+  }
+  // пиксель (u, v) → точка земли { X, Z, t } (t — дальность по лучу, м) или null (выше горизонта)
+  function ground(cam, pose, u, v) {
+    const A = pose.ax || axes(pose.psi, pose.th, pose.ph);
+    const dx = A.r[0] * u + A.d[0] * v + A.f[0] * cam.f, dy = A.r[1] * u + A.d[1] * v + A.f[1] * cam.f, dz = A.r[2] * u + A.d[2] * v + A.f[2] * cam.f;
+    if (dy < 1e-7) return null;
+    const t = cam.H / dy;
+    return { X: pose.Xc + t * dx, Z: pose.Zc + t * dz, t: t * Math.hypot(dx, dy, dz) };
+  }
+  // точка схода направления дороги (0,0,1) в кадре
+  function vanish(cam, pose) {
+    const A = pose.ax || axes(pose.psi, pose.th, pose.ph);
+    if (A.f[2] < 1e-6) return null;
+    return [cam.f * A.r[2] / A.f[2], cam.f * A.d[2] / A.f[2]];
+  }
+  // расстояние по центральной колонке (u = 0): s(v)
+  function sOfV(cam, th, psi, v) { return cam.H * Math.cos(psi || 0) * (cam.f * Math.cos(th) - v * Math.sin(th)) / (cam.f * Math.sin(th) + v * Math.cos(th)); }
+
+  /* Калибровка камеры по воротам: vs — строки ворот (доли высоты, 0..1, вниз), ss — расстояния от камеры, м.
+   * Параметры: f, th, H. Приор высоты (H0 ± sigH) и мягкий приор фокуса (≈ типичная камера смартфона). Возвращает { f, th, H, rms, rmsPct, h0 } */
+  function fitCamera(vs, ss, H0, opt) {
+    opt = opt || {};
+    const sigH = opt.sigH || 0.15, f0 = opt.f0 || 1.2, sigF = opt.sigF || 0.45, cosPsi = Math.cos(opt.psi || 0);
+    const n = vs.length, y = vs.map(v => v - 0.5);
+    const fn = p => {
+      const out = [];
+      for (let i = 0; i < n; i++) { const m = p[2] * cosPsi * (p[0] * Math.cos(p[1]) - y[i] * Math.sin(p[1])) / (p[0] * Math.sin(p[1]) + y[i] * Math.cos(p[1])); out.push((m - ss[i]) / (0.02 * ss[i] + 0.08)); }
+      out.push((p[2] - H0) / sigH); out.push((p[0] - f0) / sigF);
+      return out;
+    };
+    let best = null;
+    for (const th0 of [0.08, 0.2, 0.35, 0.55]) for (const fs of [0.9, 1.2, 1.6]) {
+      const r = lm(fn, [fs, th0, H0], [0.5, 0.005, 0.5 * H0], [3.5, 1.4, 1.8 * H0 + 0.5], 60);
+      if (!best || r.cost < best.cost) best = r;
+    }
+    const [f, th, H] = best.p;
+    let se = 0, sMax = 0;
+    for (let i = 0; i < n; i++) { const m = sOfV({ f, H }, th, opt.psi || 0, y[i]); se += (m - ss[i]) ** 2; sMax = Math.max(sMax, ss[i]); }
+    const rms = Math.sqrt(se / n);
+    return { f, th, H, rms, rmsPct: sMax > 0 ? 100 * rms / sMax : 0, h0: H0, fovDeg: 2 * Math.atan(0.5 * (opt.asp || 16 / 9) / f) * R2D };
+  }
+
+  /* Калибровка по воротам, у которых известны расстояния только МЕЖДУ собой (ds[i] — от первых, ближних ворот; ds[0] = 0), как в мастере приложения.
+   * Расстояние до первых ворот неизвестно — оно следует из модели (s0 = s(v0)). Параметры: f, th, H (приоры: H0 ± sigH, f0 ± sigF). Возвращает { f, th, H, s0, rms, rmsPct, ... } */
+  function fitCameraRel(vs, ds, H0, opt) {
+    opt = opt || {};
+    const sigH = opt.sigH || 0.15, f0 = opt.f0 || 1.2, sigF = opt.sigF || 0.45, cosPsi = Math.cos(opt.psi || 0);
+    const n = vs.length, y = vs.map(v => v - 0.5);
+    const sf = (p, yy) => p[2] * cosPsi * (p[0] * Math.cos(p[1]) - yy * Math.sin(p[1])) / (p[0] * Math.sin(p[1]) + yy * Math.cos(p[1]));
+    const fn = p => {
+      const out = [], s0 = sf(p, y[0]);
+      for (let i = 1; i < n; i++) { const m = sf(p, y[i]) - s0; out.push((m - ds[i]) / (0.02 * ds[i] + 0.08)); }
+      out.push((p[2] - H0) / sigH); out.push((p[0] - f0) / sigF);
+      if (!(s0 > 1.5)) out.push(50 * (1.5 - s0));         // ближние ворота не могут быть ближе 1,5 м от камеры
+      return out;
+    };
+    let best = null;
+    for (const th0 of [0.08, 0.2, 0.35, 0.55]) for (const fs of [0.9, 1.2, 1.6]) {
+      const r = lm(fn, [fs, th0, H0], [0.5, 0.005, 0.5 * H0], [3.5, 1.4, 1.8 * H0 + 0.5], 80);
+      if (!best || r.cost < best.cost) best = r;
+    }
+    const p = best.p, s0 = sf(p, y[0]);
+    let se = 0, dMax = 0;
+    for (let i = 1; i < n; i++) { const m = sf(p, y[i]) - s0; se += (m - ds[i]) ** 2; dMax = Math.max(dMax, ds[i]); }
+    const rms = n > 1 ? Math.sqrt(se / (n - 1)) : 0;
+    return { f: p[0], th: p[1], H: p[2], s0, rms, rmsPct: dMax > 0 ? 100 * rms / dMax : 0, h0: H0, cost: best.cost, fovDeg: 2 * Math.atan(0.5 * (opt.asp || 16 / 9) / p[0]) * R2D };
+  }
+
+  // пересечение линий (в u,v) методом МНК: lines = [{ u1, v1, u2, v2 }] → [u, v] или null
+  function intersectLines(lines) {
+    let a = 0, b = 0, c = 0, p = 0, q = 0, n = 0;
+    for (const L of lines) {
+      const dx = L.u2 - L.u1, dy = L.v2 - L.v1, len = Math.hypot(dx, dy); if (len < 1e-6) continue;
+      const nx = -dy / len, ny = dx / len, d = nx * L.u1 + ny * L.v1;
+      a += nx * nx; b += nx * ny; c += ny * ny; p += nx * d; q += ny * d; n++;
+    }
+    if (n < 2) return null;
+    const det = a * c - b * b; if (Math.abs(det) < 1e-9) return null;
+    return [(c * p - b * q) / det, (a * q - b * p) / det];
+  }
+  // рыскание, при котором точка схода по горизонтали в кадре равна uVp (тангаж и крен заданы)
+  function yawFromVp(cam, th, ph, uVp) {
+    let psi = 0;
+    for (let it = 0; it < 30; it++) {
+      const vp = vanish(cam, { psi, th, ph }); if (!vp) break;
+      const e = vp[0] - uVp, h = 1e-4, vp2 = vanish(cam, { psi: psi + h, th, ph }); if (!vp2) break;
+      const dd = (vp2[0] - vp[0]) / h; if (Math.abs(dd) < 1e-9) break;
+      const step = cl(-e / dd, -0.3, 0.3); psi += step; if (Math.abs(step) < 1e-9) break;
+    }
+    return cl(psi, -0.7, 0.7);
+  }
+
+  /* Дорога в калибровочном кадре. bounds — границы полос [{x1,y1,x2,y2}] нормированные (x по ширине, y по высоте), asp — ширина/высота кадра.
+   * Возвращает { psi, X[] (боковое положение каждой границы, м), spread (разброс по длине, м), vp, vpErrPx } */
+  function setupRoad(cam, pose0, bounds, asp, rowsPx) {
+    const lines = bounds.map(b => ({ u1: (b.x1 - 0.5) * asp, v1: b.y1 - 0.5, u2: (b.x2 - 0.5) * asp, v2: b.y2 - 0.5 }));
+    const vp = intersectLines(lines);
+    let psi = pose0.psi || 0, vpErr = null;
+    if (vp) {
+      psi = yawFromVp(cam, pose0.th, pose0.ph, vp[0]);
+      const m = vanish(cam, { psi, th: pose0.th, ph: pose0.ph });
+      if (m) vpErr = vp[1] - m[1];   // расхождение высоты точки схода линий полос и горизонта модели (доли высоты кадра)
+    }
+    const pose = { psi, th: pose0.th, ph: pose0.ph, Xc: 0, Zc: 0 };
+    const X = [], spread = [];
+    for (const L of lines) {
+      const vTop = Math.max(L.v1, L.v2), vBot = Math.min(L.v1, L.v2), xs = [];
+      const pA = project(cam, pose, 0, 8), pB = project(cam, pose, 0, 36);
+      const vNear = pA ? Math.min(pA[1], vTop) : vTop, vFar = pB ? Math.max(pB[1], vBot) : vBot;
+      for (let k = 0; k < 9; k++) {
+        const v = vFar + (vNear - vFar) * k / 8, t = (v - L.v1) / ((L.v2 - L.v1) || 1e-9), u = L.u1 + t * (L.u2 - L.u1), g = ground(cam, pose, u, v);
+        if (g && g.Z > 3) xs.push(g.X);
+      }
+      const m = med(xs); X.push(m); spread.push(xs.length ? Math.max(...xs.map(x => Math.abs(x - m))) : NaN);
+    }
+    return { psi, X, spread, vp, vpErr };
+  }
+
+  return { D2R, R2D, cl, wrap, dot, cross, med, solveN, lm, axes, project, ground, vanish, sOfV, fitCamera, fitCameraRel, intersectLines, yawFromVp, setupRoad };
+})();
+if (typeof module !== 'undefined') module.exports = Wk;
+/* ==== WALK:CAMERA:END ==== */
+
+/* ==== WALK:IMU:BEGIN ====
+ * Режим «Ходьба», часть 2: ориентация телефона по датчикам.
+ * Кватернион q = [x, y, z, w] поворачивает вектор из системы УСТРОЙСТВА (x вправо, y вверх по экрану, z из экрана) в мировую (x восток, y север, z вверх).
+ * Источники: (1) RelativeOrientationSensor (готовый кватернион) · (2) devicemotion: свой комплементарный фильтр (гироскоп + гравитация).
+ */
+const WkImu = (() => {
+  const cl = (v, a, b) => (v < a ? a : (v > b ? b : v));
+  const qMul = (a, b) => [a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1], a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0], a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3], a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]];
+  const qNorm = q => { const n = Math.hypot(q[0], q[1], q[2], q[3]) || 1; return [q[0] / n, q[1] / n, q[2] / n, q[3] / n]; };
+  const qConj = q => [-q[0], -q[1], -q[2], q[3]];
+  function qRot(q, v) {   // v в мировую
+    const x = q[0], y = q[1], z = q[2], w = q[3];
+    const tx = 2 * (y * v[2] - z * v[1]), ty = 2 * (z * v[0] - x * v[2]), tz = 2 * (x * v[1] - y * v[0]);
+    return [v[0] + w * tx + (y * tz - z * ty), v[1] + w * ty + (z * tx - x * tz), v[2] + w * tz + (x * ty - y * tx)];
+  }
+  const qRotInv = (q, v) => qRot(qConj(q), v);
+  function qSlerp(a, b, t) {
+    let d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3], s = 1;
+    if (d < 0) { d = -d; s = -1; }
+    let k0 = 1 - t, k1 = t;
+    if (d < 0.9995) { const th = Math.acos(d), sn = Math.sin(th); k0 = Math.sin((1 - t) * th) / sn; k1 = Math.sin(t * th) / sn; }
+    return qNorm([k0 * a[0] + s * k1 * b[0], k0 * a[1] + s * k1 * b[1], k0 * a[2] + s * k1 * b[2], k0 * a[3] + s * k1 * b[3]]);
+  }
+  function qFromMat(m) {   // m[row][col]
+    const tr = m[0][0] + m[1][1] + m[2][2]; let q;
+    if (tr > 0) { const s = Math.sqrt(tr + 1) * 2; q = [(m[2][1] - m[1][2]) / s, (m[0][2] - m[2][0]) / s, (m[1][0] - m[0][1]) / s, 0.25 * s]; }
+    else if (m[0][0] > m[1][1] && m[0][0] > m[2][2]) { const s = Math.sqrt(1 + m[0][0] - m[1][1] - m[2][2]) * 2; q = [0.25 * s, (m[0][1] + m[1][0]) / s, (m[0][2] + m[2][0]) / s, (m[2][1] - m[1][2]) / s]; }
+    else if (m[1][1] > m[2][2]) { const s = Math.sqrt(1 + m[1][1] - m[0][0] - m[2][2]) * 2; q = [(m[0][1] + m[1][0]) / s, 0.25 * s, (m[1][2] + m[2][1]) / s, (m[0][2] - m[2][0]) / s]; }
+    else { const s = Math.sqrt(1 + m[2][2] - m[0][0] - m[1][1]) * 2; q = [(m[0][2] + m[2][0]) / s, (m[1][2] + m[2][1]) / s, 0.25 * s, (m[1][0] - m[0][1]) / s]; }
+    return qNorm(q);
+  }
+
+  /* Оси камеры (вправо, вниз, вперёд) в системе устройства. Основная камера смотрит в −z. Угол экрана A: 0 → верх кадра = +y; 90 → +x; 180 → −y; 270 → −x */
+  function camAxesDev(angleDeg) {
+    const A = ((Math.round(angleDeg / 90) % 4) + 4) % 4 * 90;
+    const ey = A === 0 ? [0, -1, 0] : A === 90 ? [-1, 0, 0] : A === 180 ? [0, 1, 0] : [1, 0, 0], ez = [0, 0, -1];
+    const ex = [ey[1] * ez[2] - ey[2] * ez[1], ey[2] * ez[0] - ey[0] * ez[2], ey[0] * ez[1] - ey[1] * ez[0]];
+    return { ex, ey, ez, angle: A };
+  }
+  /* Привязка по гравитации: aDev — акселерометр с гравитацией (направление «вверх» в системе устройства); при почти горизонтальной оси камеры «низ кадра» = −(проекция вверх на плоскость экрана) */
+  function snapAxes(aDev, prev) {
+    const n = Math.hypot(aDev[0], aDev[1], aDev[2]); if (n < 4) return prev || null;
+    const ax = aDev[0] / n, ay = aDev[1] / n, az = aDev[2] / n;
+    if (Math.abs(az) > 0.75) return prev || null;   // камера смотрит почти вверх/вниз — не решаем
+    const down = Math.abs(ax) > Math.abs(ay) ? (ax > 0 ? 90 : 270) : (ay > 0 ? 0 : 180);   // верх кадра = направление «вверх»
+    return camAxesDev(down);
+  }
+
+  /* Углы камеры из кватерниона: тангаж (+ вниз), крен, курс (рад, по часовой от севера), гравитация в системе камеры */
+  function attitude(q, ax) {
+    const rw = qRot(q, ax.ex), dw = qRot(q, ax.ey), fw = qRot(q, ax.ez);
+    const gx = -rw[2], gy = -dw[2], gz = -fw[2];
+    return { th: Math.asin(cl(gz, -1, 1)), ph: Math.atan2(gx, gy), hd: Math.atan2(fw[0], fw[1]), f: fw, r: rw, d: dw };
+  }
+
+  /* Комплементарный фильтр (Mahony): гироскоп + гравитация с ослаблением при ускорении (ходьба) */
+  class Fusion {
+    constructor(o) { o = o || {}; this.kp = o.kp != null ? o.kp : 1.2; this.ki = o.ki != null ? o.ki : 0.03; this.tau = o.tau || 0.7; this.aw = null; this.dev = null; this.q = [0, 0, 0, 1]; this.bias = [0, 0, 0]; this.t = null; this.init = false; this.accQ = 0; }
+    reset() { this.init = false; this.t = null; this.bias = [0, 0, 0]; this.aw = null; this.dev = null; }
+    seed(a) {   // начальная ориентация по гравитации (курс произвольный)
+      const n = Math.hypot(a[0], a[1], a[2]) || 1, u = [a[0] / n, a[1] / n, a[2] / n];
+      // поворот из устройства в мир, переводящий u в (0,0,1): ось = u × z, угол = acos(u.z)
+      const ax = [u[1], -u[0], 0], s = Math.hypot(ax[0], ax[1]), ang = Math.acos(cl(u[2], -1, 1));
+      if (s < 1e-6) this.q = u[2] > 0 ? [0, 0, 0, 1] : [1, 0, 0, 0];
+      else { const k = Math.sin(ang / 2) / s; this.q = qNorm([ax[0] * k, ax[1] * k, 0, Math.cos(ang / 2)]); }
+      this.init = true;
+    }
+    // w — угловая скорость в системе устройства, рад/с; a — акселерометр с гравитацией, м/с² (может быть null); t — секунды
+    // Гравитация берётся из ускорения, усреднённого в МИРОВОЙ системе (τ ≈ 0,7 с): качание шагов (вертикаль ±3 м/с², 2 Гц) гасится, а быстрые наклоны телефона ведёт гироскоп
+    step(w, a, t) {
+      if (!this.init) { if (a) { this.seed(a); this.aw = qRot(this.q, a); } this.t = t; if (!this.init) return null; }
+      const dt = this.t == null ? 0 : cl(t - this.t, 0, 0.1); this.t = t;
+      if (dt <= 0) return this.q;
+      let wx = w[0] - this.bias[0], wy = w[1] - this.bias[1], wz = w[2] - this.bias[2];
+      if (a) {
+        const aw = qRot(this.q, a), kf = Math.min(1, dt / this.tau);
+        if (!this.aw) this.aw = aw;
+        this.aw = [this.aw[0] + (aw[0] - this.aw[0]) * kf, this.aw[1] + (aw[1] - this.aw[1]) * kf, this.aw[2] + (aw[2] - this.aw[2]) * kf];
+        const dev = Math.hypot(aw[0] - this.aw[0], aw[1] - this.aw[1], aw[2] - this.aw[2]);   // «шумность» ускорения: быстрые рывки
+        this.dev = this.dev == null ? dev : this.dev + (dev - this.dev) * kf;
+        const an = Math.hypot(this.aw[0], this.aw[1], this.aw[2]);
+        if (an > 1) {
+          const q = clamp9(1 - Math.abs(an - 9.81) / 1.5) * clamp9(1.2 - this.dev / 5);   // качество: средняя |a| ≈ g и нет сильных рывков
+          const ew = [this.aw[1] / an, -this.aw[0] / an, 0];   // a_lp × z (мир)
+          const e = qRotInv(this.q, ew), k = this.kp * q;
+          this.bias[0] -= this.ki * q * e[0] * dt; this.bias[1] -= this.ki * q * e[1] * dt; this.bias[2] -= this.ki * q * e[2] * dt;
+          const bm = 0.35; for (let i = 0; i < 3; i++) this.bias[i] = cl(this.bias[i], -bm, bm);
+          wx += k * e[0]; wy += k * e[1]; wz += k * e[2]; this.accQ = q;
+        }
+      }
+      const h = 0.5 * dt, dq = qMul(this.q, [wx * h, wy * h, wz * h, 0]);
+      this.q = qNorm([this.q[0] + dq[0], this.q[1] + dq[1], this.q[2] + dq[2], this.q[3] + dq[3]]);
+      return this.q;
+    }
+  }
+  const clamp9 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+  /* Кольцевой буфер ориентаций по времени (секунды) с интерполяцией */
+  class Buf {
+    constructor(n) { this.n = n || 600; this.t = []; this.q = []; }
+    push(t, q) { const T = this.t; if (T.length && t <= T[T.length - 1]) return; T.push(t); this.q.push(q); if (T.length > this.n) { T.shift(); this.q.shift(); } }
+    last() { return this.t.length ? { t: this.t[this.t.length - 1], q: this.q[this.q.length - 1] } : null; }
+    at(t) {
+      const T = this.t, n = T.length; if (!n) return null;
+      if (t <= T[0]) return this.q[0];
+      if (t >= T[n - 1]) return this.q[n - 1];
+      let lo = 0, hi = n - 1; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (T[m] <= t) lo = m; else hi = m; }
+      return qSlerp(this.q[lo], this.q[hi], (t - T[lo]) / (T[hi] - T[lo]));
+    }
+    span() { return this.t.length > 1 ? this.t[this.t.length - 1] - this.t[0] : 0; }
+  }
+  return { qMul, qNorm, qConj, qRot, qRotInv, qSlerp, qFromMat, camAxesDev, snapAxes, attitude, Fusion, Buf };
+})();
+if (typeof module !== 'undefined') module.exports = WkImu;
+/* ==== WALK:IMU:END ==== */
+
+/* ==== WALK:MOTION:BEGIN ====
+ * Режим «Ходьба», часть 3: своя скорость и путь (фильтр Калмана), детектор шагов, поза камеры относительно дороги.
+ */
+const WkMotion = (() => {
+  const cl = (v, a, b) => (v < a ? a : (v > b ? b : v));
+
+  /* Детектор шагов по вертикальному ускорению (мировая система). push(t, azWorld) → { walking, cadence, stationary, steps } */
+  class Steps {
+    constructor() { this.reset(); }
+    reset() { this.lp = null; this.hp = 0; this.sm = 0; this.prev = [0, 0]; this.peakT = []; this.lastPeak = -9; this.var = 0; this.steps = 0; this.t = null; this.thr = 0.9; this.out = { walking: false, cadence: 0, stationary: true, steps: 0, energy: 0 }; }
+    push(t, az) {
+      const dt = this.t == null ? 0.01 : cl(t - this.t, 0.001, 0.1); this.t = t;
+      if (this.lp == null) this.lp = az;
+      this.lp += (az - this.lp) * Math.min(1, dt / 1.0);            // убираем гравитацию и медленные изменения
+      const hp = az - this.lp;
+      this.sm += (hp - this.sm) * Math.min(1, dt / 0.06);           // сглаживаем дрожь выше ~3 Гц
+      this.var += (hp * hp - this.var) * Math.min(1, dt / 0.8);
+      const e = Math.sqrt(this.var);
+      this.out.energy = e;
+      // пик сглаженного сигнала: был рост, стал спад, значение выше порога
+      const p0 = this.prev[0], p1 = this.prev[1];
+      if (p1 > p0 && this.sm < p1 && p1 > Math.max(0.6, 0.9 * e) && t - this.lastPeak > 0.28) {
+        this.lastPeak = t; this.steps++; this.peakT.push(t); if (this.peakT.length > 8) this.peakT.shift();
+      }
+      this.prev = [p1, this.sm];
+      const T = this.peakT.filter(x => t - x < 2.6);
+      let cadence = 0, walking = false;
+      if (T.length >= 3) {
+        const iv = []; for (let i = 1; i < T.length; i++) iv.push(T[i] - T[i - 1]);
+        const m = iv.reduce((s, v) => s + v, 0) / iv.length, sd = Math.sqrt(iv.reduce((s, v) => s + (v - m) * (v - m), 0) / iv.length);
+        if (m > 0.3 && m < 0.9 && sd < 0.22 * m) { cadence = 1 / m; walking = true; }
+      }
+      this.out = { walking, cadence, stationary: !walking && e < 0.45 && t - this.lastPeak > 0.7, steps: this.steps, energy: e };
+      return this.out;
+    }
+  }
+
+  /* Скорость вдоль дороги: u (м/с) — состояние фильтра; измерения: шаги, зрение (поток земли), GPS, «стою» */
+  class Odo {
+    constructor(o) {
+      o = o || {};
+      this.u = 0; this.P = 1.0; this.w = 0; this.t = null;
+      this.q = o.q || 0.35 * 0.35;             // шум процесса, (м/с)²/с: скорость ходьбы меняется медленно
+      this.L = o.stride || 0.78;               // длина шага, м (рост ≈186 см → ≈0,42 роста); подстраивается по зрению и GPS
+      this.Lmin = 0.45; this.Lmax = 1.1; this.nL = 0;
+      this.src = { vis: 0, step: 0, gps: 0, zupt: 0 }; this.last = {};
+    }
+    predict(t) {
+      if (this.t == null) { this.t = t; return; }
+      const dt = cl(t - this.t, 0, 0.3); this.t = t;
+      this.P += this.q * dt; this.w += Math.max(0, this.u) * dt;
+    }
+    update(z, R, tag, t) {
+      const K = this.P / (this.P + R); this.u += K * (z - this.u); this.P *= (1 - K);
+      if (this.u < 0) this.u = 0; if (this.u > 3.2) this.u = 3.2;
+      this.src[tag] = (this.src[tag] || 0) + 1; this.last[tag] = { z, R, t };
+    }
+    // шаги: cadence (шаг/с)
+    stepMeas(cadence, t) { if (cadence > 0.8) this.update(cadence * this.L, Math.pow(0.2 + 0.1 * cadence * this.L, 2), 'step', t); }
+    zupt(t) { this.update(0, 0.04 * 0.04, 'zupt', t); }
+    visMeas(z, sigma, cadence, t) {
+      this.update(z, sigma * sigma, 'vis', t);
+      if (cadence > 1.2 && z > 0.6 && sigma < 0.25) { this.L = cl(this.L + 0.015 * (z / cadence - this.L), this.Lmin, this.Lmax); this.nL++; }   // длина шага по зрению
+    }
+    gpsMeas(speed, acc, cadence, t) {
+      if (!(speed >= 0) || !(acc > 0) || acc > 25) return;
+      const sg = Math.max(0.45, 0.07 * acc);
+      this.update(speed, sg * sg, 'gps', t);
+      if (cadence > 1.2 && speed > 0.9 && acc < 12) { this.L = cl(this.L + 0.01 * (speed / cadence - this.L), this.Lmin, this.Lmax); this.nL++; }
+    }
+    get sigma() { return Math.sqrt(this.P); }
+  }
+
+  /* Поза камеры относительно дороги = калибровочная поза + изменения по датчикам + медленные визуальные поправки.
+   *  th = th_c + (θ_g − θ_g0) + alpha      (alpha — изменение уклона дороги с момента калибровки, рад; + = дорога впереди круче вверх)
+   *  ph = ph_c + (φ_g − φ_g0)
+   *  psi = psi_c + (курс − курс0) + psiOff  (psiOff — дрейф гироскопа и поворот дороги, рад)
+   *  Zc — пройденный путь, Xc — боковое смещение от места калибровки, kappa — кривизна дороги (1/м, + вправо) */
+  class PoseEngine {
+    constructor(cam, cal, att0, opt) {
+      opt = opt || {};
+      this.cam = cam; this.cal = cal;
+      this.ref = { th: att0 ? att0.th : 0, ph: att0 ? att0.ph : 0, hd: att0 ? att0.hd : 0 };
+      this.alpha = 0; this.psiOff = 0; this.Xc = 0; this.Zc = 0; this.kappa = 0;
+      this.alphaManual = 0; this.kappaManual = 0; this.autoRoad = opt.autoRoad !== false;
+      this.lim = { alpha: 0.10, psi: 0.6, X: 7, kappa: 1 / 25 };
+      this.vis = { n: 0, q: 0, t: -9 };
+    }
+    // att — attitude() из кватерниона на момент кадра; zc — пройденный путь (одометрия)
+    pose(att, zc, dir) {
+      const c = this.cal, r = this.ref, alpha = this.alpha + this.alphaManual;
+      const th = att ? c.th + (att.th - r.th) + alpha : c.th + alpha;
+      const ph = att ? c.ph + (att.ph - r.ph) : c.ph;
+      const psi = (att ? c.psi + Wk.wrap(att.hd - r.hd) : c.psi) + this.psiOff;
+      return { psi, th, ph, Xc: this.Xc, Zc: zc != null ? zc : this.Zc };
+    }
+    // поправка по визуальной подгонке дороги: d = { dX, dPsi, dTh, kappa } относительно текущей позы; q — качество 0..1
+    applyRoad(d, q, t, gk) {   // gk — множитель усиления (быстрая «настройка» в первые секунды после старта)
+      if (!this.autoRoad || !(q > 0)) return;
+      const g = Math.min(0.5, 0.10 * q * (gk || 1)), L = this.lim;
+      this.psiOff = cl(this.psiOff + g * d.dPsi, -L.psi, L.psi);
+      this.alpha = cl(this.alpha + g * d.dTh, -L.alpha, L.alpha);
+      this.Xc = cl(this.Xc + 0.5 * g * d.dX, -L.X, L.X);
+      if (d.kappa != null) this.kappa = cl(this.kappa + 0.5 * g * (d.kappa - this.kappa), -L.kappa, L.kappa);
+      this.vis.n++; this.vis.q = 0.9 * this.vis.q + 0.1 * q; this.vis.t = t;
+    }
+    get kap() { return this.kappa + this.kappaManual; }
+    get gradePct() { return 100 * Math.tan(this.alpha + this.alphaManual); }
+  }
+  return { Steps, Odo, PoseEngine };
+})();
+if (typeof module !== 'undefined') module.exports = WkMotion;
+/* ==== WALK:MOTION:END ==== */
+
+/* ==== WALK:VISION:BEGIN ====
+ * Режим «Ходьба», часть 4: зрение на сером кадре анализа.
+ *  · lkShift — сдвиг небольшого участка кадра (Лукас–Канаде, пирамида 3 уровня)
+ *  · lineSamples + roadFit — поиск линий полос и подгонка позы/уклона/кривизны дороги (точка схода)
+ *  · VisOdo — своя скорость по потоку текстуры земли с компенсацией поворота по датчикам
+ */
+const WkVis = (() => {
+  const cl = (v, a, b) => (v < a ? a : (v > b ? b : v));
+
+  function bil(I, w, h, x, y) {
+    if (x < 0) x = 0; else if (x > w - 1.001) x = w - 1.001;
+    if (y < 0) y = 0; else if (y > h - 1.001) y = h - 1.001;
+    const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0, i = y0 * w + x0;
+    return (I[i] * (1 - fx) + I[i + 1] * fx) * (1 - fy) + (I[i + w] * (1 - fx) + I[i + w + 1] * fx) * fy;
+  }
+
+  /* Сдвиг участка (cx, cy ± hw, hh) из prev в cur. Начальное приближение (dx0, dy0). Возвращает { dx, dy, ok, err, cond } */
+  function lkShift(prev, cur, w, h, cx, cy, hw, hh, dx0, dy0) {
+    let dx = dx0 || 0, dy = dy0 || 0, ok = true, err = 0, cond = 0;
+    for (const st of [4, 2, 1]) {
+      const nx = Math.max(3, Math.floor(2 * hw / st)), ny = Math.max(3, Math.floor(2 * hh / st));
+      const T = new Float32Array(nx * ny), GX = new Float32Array(nx * ny), GY = new Float32Array(nx * ny);
+      let a = 0, b = 0, c = 0, k = 0;
+      const sx0 = cx - hw + st / 2, sy0 = cy - hh + st / 2, r = st * 0.5;
+      const smp = (I, x, y) => (st === 1 ? bil(I, w, h, x, y) : 0.25 * (bil(I, w, h, x - r * 0.5, y - r * 0.5) + bil(I, w, h, x + r * 0.5, y - r * 0.5) + bil(I, w, h, x - r * 0.5, y + r * 0.5) + bil(I, w, h, x + r * 0.5, y + r * 0.5)));
+      for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++, k++) {
+        const x = sx0 + i * st, y = sy0 + j * st;
+        T[k] = smp(prev, x, y);
+        const gx = (smp(prev, x + st * 0.5, y) - smp(prev, x - st * 0.5, y)) / st, gy = (smp(prev, x, y + st * 0.5) - smp(prev, x, y - st * 0.5)) / st;
+        GX[k] = gx; GY[k] = gy; a += gx * gx; b += gx * gy; c += gy * gy;
+      }
+      const det = a * c - b * b, tr = a + c;
+      cond = Math.max(0, det) / (tr * tr + 1e-9);
+      if (det < 1e-6 || tr < 1e-6 * nx * ny) { ok = false; break; }
+      const iters = st === 1 ? 6 : 5;
+      for (let it = 0; it < iters; it++) {
+        let sx = 0, sy = 0, se = 0; k = 0;
+        for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++, k++) {
+          const e = smp(cur, sx0 + i * st + dx, sy0 + j * st + dy) - T[k];
+          sx += GX[k] * e; sy += GY[k] * e; se += Math.abs(e);
+        }
+        const ddx = (c * sx - b * sy) / det, ddy = (a * sy - b * sx) / det;
+        dx -= ddx; dy -= ddy; err = se / (nx * ny);
+        if (Math.abs(ddx) + Math.abs(ddy) < 0.02) break;
+      }
+      if (!isFinite(dx) || !isFinite(dy) || Math.abs(dx - (dx0 || 0)) > 40 || Math.abs(dy - (dy0 || 0)) > 40) { ok = false; break; }
+    }
+    return { dx, dy, ok, err, cond };
+  }
+
+  /* Поиск линий: для каждой предсказанной точки { k, x, y, win, wm } (пиксели анализа; wm — ожидаемая ширина штриха, px) ищем лучший отклик «светлый/тёмный штрих» вдоль строки.
+   * Возвращает [{ k, y, x, conf }] только для уверенных находок */
+  function lineSamples(I, w, h, preds, minContrast) {
+    const out = [], mc = minContrast || 6;
+    for (const p of preds) {
+      const y0 = Math.round(p.y); if (y0 < 3 || y0 > h - 4) continue;
+      const a = Math.max(1, Math.round(p.wm / 2)), b = a * 3 + 1, win = Math.max(4, Math.round(p.win)), x0 = Math.round(p.x);
+      if (x0 - win - b < 1 || x0 + win + b > w - 2) continue;
+      const n = 2 * win + 1, row = new Float32Array(n + 2 * b + 2);
+      for (let i = 0; i < row.length; i++) { const x = x0 - win - b - 1 + i; let s = 0; for (let dy = -2; dy <= 2; dy++) s += I[(y0 + dy) * w + x]; row[i] = s / 5; }
+      const R = new Float32Array(n); let best = -1, bi = 0, sum = 0;
+      for (let i = 0; i < n; i++) {
+        const c = i + b + 1;
+        let m0 = 0; for (let q = -a; q <= a; q++) m0 += row[c + q]; m0 /= (2 * a + 1);
+        let m1 = 0, n1 = 0; for (let q = a + 1; q <= b; q++) { m1 += row[c - q] + row[c + q]; n1 += 2; } m1 /= n1;
+        const r = Math.abs(m0 - m1); R[i] = r; sum += r;
+        if (r > best) { best = r; bi = i; }
+      }
+      const mean = sum / n; if (best < mc) continue;
+      let second = 0; for (let i = 0; i < n; i++) if (Math.abs(i - bi) > a + 2 && R[i] > second) second = R[i];
+      const conf = Math.min(1, (best - mean) / (best + 1e-6) * 1.2) * Math.min(1, (best - second) / (0.35 * best + 1e-6));
+      if (conf < 0.28) continue;
+      // уточнение вершины параболой
+      let xs = bi; if (bi > 0 && bi < n - 1) { const l = R[bi - 1], c = R[bi], r = R[bi + 1], d = l - 2 * c + r; if (d < -1e-6) xs = bi + 0.5 * (l - r) / d; }
+      out.push({ k: p.k, y: p.y, x: x0 - win + xs, conf, contrast: best });
+    }
+    return out;
+  }
+
+  /* Подгонка дороги: неизвестные поправки позы [dX, dPsi, dTh] и кривизна kappa. pts — [{k, u, v, w}] (u, v — в единицах высоты кадра от центра), road.X[k] — боковое положение границы k, м.
+   * Невязка — боковое положение точки на земле минус положение модельной границы (X_k + κ·Z²/2), в пикселях. Возвращает { d, kappa, rms, n, inl, lines, q } или null */
+  function roadFit(cam, pose, road, pts, o) {
+    o = o || {};
+    const ah = o.ah || 360, kPrev = o.kappaPrev || 0;
+    if (pts.length < 8) return null;
+    const lines = new Set(pts.map(p => p.k)).size;
+    const w = pts.map(p => p.w || 1);
+    const sig = [0.7, 2.2 * Wk.D2R, 0.9 * Wk.D2R, 1 / 90];   // приоры: боковой сдвиг, рыскание, тангаж/уклон, кривизна
+    const resid = (p, ww) => {
+      const ps = { psi: pose.psi + p[1], th: pose.th + p[2], ph: pose.ph, Xc: pose.Xc + p[0], Zc: pose.Zc };
+      ps.ax = Wk.axes(ps.psi, ps.th, ps.ph);
+      const out = [];
+      for (let i = 0; i < pts.length; i++) {
+        const q = pts[i], g = Wk.ground(cam, ps, q.u, q.v);
+        if (!g) { out.push(40 * ww[i]); continue; }
+        const Zr = g.Z - pose.Zc, dep = Math.max(1.5, Zr);
+        const dX = g.X - (road.X[q.k] + p[3] * Zr * Zr * 0.5);   // кривизна — от текущего положения камеры (Xc и рыскание перепривязываются непрерывно)
+        out.push(ww[i] * dX * cam.f * ah / dep);
+      }
+      out.push(p[0] / sig[0] * 1.0, p[1] / sig[1], p[2] / sig[2], (p[3] - kPrev) / (sig[3] * 0.5), p[3] / (1 / 45));
+      return out;
+    };
+    let p = [0, 0, 0, kPrev], ww = w.slice();
+    const lo = [-4, -0.5, -0.12, -1 / 25], hi = [4, 0.5, 0.12, 1 / 25];
+    // робастная подгонка с постепенным сужением допуска (10 → 5 → 3 → 2,2 px): плохое начальное приближение не «выкидывает» все точки сразу
+    for (const sc of [10, 5, 3, 2.2]) {
+      p = Wk.lm(q => resid(q, ww), p, lo, hi, 18).p;
+      const r = resid(p, ww.map(() => 1));
+      ww = w.map((wi, i) => { const e = Math.abs(r[i]) / sc; return wi * (e < 1 ? (1 - e * e) * (1 - e * e) : 0.02); });
+    }
+    const r = resid(p, w.map(() => 1));
+    let se = 0, sw = 0, inl = 0;
+    for (let i = 0; i < pts.length; i++) { if (ww[i] > 0.1 * w[i]) { se += w[i] * r[i] * r[i]; sw += w[i]; inl++; } }
+    const rms = sw > 0 ? Math.sqrt(se / sw) : 99;
+    // апостериорная неопределённость тангажа: (JᵀJ)⁻¹ по параметрам
+    const J = [], r0 = resid(p, ww);
+    for (let j = 0; j < 4; j++) { const h = j === 3 ? 1e-5 : 1e-4, q = p.slice(); q[j] += h; const r1 = resid(q, ww); J.push(r1.map((v, i) => (v - r0[i]) / h)); }
+    const A = []; for (let a = 0; a < 4; a++) { A.push([]); for (let b = 0; b < 4; b++) { let s = 0; for (let i = 0; i < r0.length; i++) s += J[a][i] * J[b][i]; A[a].push(s); } }
+    let sdTh = sig[2], sdPsi = sig[1];
+    const e2 = Wk.solveN(A, [0, 0, 1, 0]), e1 = Wk.solveN(A, [0, 1, 0, 0]);
+    if (e2 && e2[2] > 0) sdTh = Math.sqrt(e2[2] * Math.max(rms, 0.5) ** 2);
+    if (e1 && e1[1] > 0) sdPsi = Math.sqrt(e1[1] * Math.max(rms, 0.5) ** 2);
+    const info = cl(1 - sdTh / sig[2], 0, 1);
+    const q = cl(1.3 / Math.max(rms, 0.5), 0, 1) * cl(inl / 14, 0, 1) * (lines >= 2 ? 1 : 0.3) * (0.25 + 0.75 * info);
+    return { d: { dX: p[0], dPsi: p[1], dTh: p[2], kappa: p[3] }, rms, n: pts.length, inl, lines, sdTh, sdPsi, q: inl >= 8 && rms < 2.5 ? q : 0 };
+  }
+
+  /* Визуальная одометрия по текстуре земли. pose содержит .ax (оси). update() вызывается каждый кадр; измерение — по опорному кадру не старее dtMax. */
+  class VisOdo {
+    constructor(cam, aw, ah, o) {
+      o = o || {};
+      this.cam = cam; this.aw = aw; this.ah = ah; this.ref = null;
+      this.dtMin = o.dtMin || 0.22; this.dtMax = o.dtMax || 0.6; this.zNear = o.zNear || 2.6; this.zFar = o.zFar || 7.5; this.maxPts = o.maxPts || 12;
+      this.hw = o.hw || 11; this.hh = o.hh || 8; this.last = null;
+    }
+    reset() { this.ref = null; this.last = null; }
+    _seed(gray, pose, t, excl) {
+      const cam = this.cam, aw = this.aw, ah = this.ah, pts = [];
+      const rows = [], nR = 4, nC = 5;
+      for (let i = 0; i < nR; i++) rows.push(this.zNear + (this.zFar - this.zNear) * i / (nR - 1));
+      for (const Z of rows) for (let j = 0; j < nC; j++) {
+        // колонка: боковое положение ±(0.12…0.38 ширины кадра)
+        const fu = (-0.30 + 0.60 * j / (nC - 1)) * (aw / ah), pr = Wk.project(cam, pose, pose.Xc, pose.Zc + Z); if (!pr) continue;
+        const u = fu, v = pr[1], x = (u / 1) * ah + aw / 2, y = v * ah + ah / 2;
+        if (x < this.hw + 4 || x > aw - this.hw - 4 || y < this.hh + 4 || y > ah - this.hh - 4) continue;
+        if (excl && excl(x, y)) continue;
+        // текстурность: средний модуль градиента
+        let g = 0, n = 0; for (let yy = (y | 0) - this.hh; yy < (y | 0) + this.hh; yy += 2) for (let xx = (x | 0) - this.hw; xx < (x | 0) + this.hw; xx += 2) { g += Math.abs(gray[yy * aw + xx + 1] - gray[yy * aw + xx - 1]) + Math.abs(gray[(yy + 1) * aw + xx] - gray[(yy - 1) * aw + xx]); n++; }
+        g /= n; if (g < 3.0) continue;
+        const G = Wk.ground(cam, pose, u, v); if (!G) continue;
+        pts.push({ x, y, u, v, G, g });
+      }
+      pts.sort((a, b) => b.g - a.g);
+      this.ref = { gray: gray.slice(), pose: { psi: pose.psi, th: pose.th, ph: pose.ph, Xc: pose.Xc, Zc: pose.Zc }, t, pts: pts.slice(0, this.maxPts) };
+    }
+    // gray — текущий кадр; pose — поза сейчас (Zc — путь по одометрии), u0 — текущая оценка скорости (для начального приближения), excl(x, y) — в рамке машины
+    update(gray, pose, t, u0, excl) {
+      const cam = this.cam, aw = this.aw, ah = this.ah, R = this.ref;
+      let res = null;
+      if (R && t - R.t > this.dtMax) { this.ref = null; }
+      else if (R && t - R.t >= this.dtMin && R.pts.length >= 4) {
+        const dt = t - R.t, d0 = Math.max(0, u0 || 1.2) * dt, ests = [], base = { psi: pose.psi, th: pose.th, ph: pose.ph, Xc: R.pose.Xc };
+        base.ax = Wk.axes(base.psi, base.th, base.ph);
+        const proj = (P, dz) => { const q = Wk.project(cam, { psi: base.psi, th: base.th, ph: base.ph, Xc: base.Xc, Zc: R.pose.Zc + dz, ax: base.ax }, P.G.X, P.G.Z); return q ? [q[0] * ah + aw / 2, q[1] * ah + ah / 2] : null; };
+        for (const P of R.pts) {
+          const pp = proj(P, d0); if (!pp) continue;
+          if (pp[0] < this.hw + 3 || pp[0] > aw - this.hw - 3 || pp[1] < this.hh + 3 || pp[1] > ah - this.hh - 3) continue;
+          const m = lkShift(R.gray, gray, aw, ah, P.x, P.y, this.hw, this.hh, pp[0] - P.x, pp[1] - P.y);
+          if (!m.ok || m.cond < 0.01 || m.err > 14) continue;
+          const mx = P.x + m.dx, my = P.y + m.dy, a1 = proj(P, d0 + 0.05); if (!a1) continue;
+          const ex = (a1[0] - pp[0]) / 0.05, ey = (a1[1] - pp[1]) / 0.05, den = ex * ex + ey * ey; if (den < 0.04) continue;
+          const dd = d0 + ((mx - pp[0]) * ex + (my - pp[1]) * ey) / den;   // смещение вдоль дороги, м
+          ests.push({ d: dd, w: Math.sqrt(den) });
+        }
+        if (ests.length >= 3) {
+          const ds = ests.map(e => e.d), m = Wk.med(ds), mad = Wk.med(ds.map(x => Math.abs(x - m))), s = Math.max(0.025, 1.4826 * mad / Math.sqrt(ests.length));
+          const good = ests.filter(e => Math.abs(e.d - m) < 3 * Math.max(0.03, 1.4826 * mad));
+          if (good.length >= 3) {
+            const dm = good.reduce((a, e) => a + e.d * e.w, 0) / good.reduce((a, e) => a + e.w, 0);
+            res = { ok: true, u: dm / dt, sigma: Math.max(0.12, s / dt), n: good.length, dt, d: dm };
+          }
+        }
+        this.ref = null;
+      }
+      if (!this.ref) this._seed(gray, pose, t, excl);
+      if (res) this.last = res;
+      return res;
+    }
+  }
+  return { bil, lkShift, lineSamples, roadFit, VisOdo };
+})();
+if (typeof module !== 'undefined') module.exports = WkVis;
+/* ==== WALK:VISION:END ==== */
+
+/* ==== WALK:TRACKS:BEGIN ====
+ * Режим «Ходьба», часть 5: машины. Детектор (YOLO) даёт рамки несколько раз в секунду; между ними нижний край машины ведёт Лукас–Канаде по каждому кадру.
+ * Контактная точка рамки переводится в координаты дороги по ТЕКУЩЕЙ позе камеры (датчики + одометрия + визуальные поправки):
+ *   s_road = Z_cam + Zc (C1, «к дороге») · Z_cam (C2, «к камере», скорость = относительная + своя).
+ * Скорость — взвешенная регрессия s(t) по скользящему окну; второй независимый подсчёт — по пересечениям ворот (D÷t); расхождение A/B → «~» и качество.
+ */
+const WkTracks = (() => {
+  const cl = (v, a, b) => (v < a ? a : (v > b ? b : v));
+
+  // Взвешенная прямая y = a + b·t по точкам { t, y, s } (s — σ точки). Возвращает { slope, rms, rel, n, T } или null
+  function wls(P, i0, i1) {
+    const n = i1 - i0 + 1; if (n < 3) return null;
+    let sw = 0, st = 0, sy = 0; const tm = P[i0].t;
+    for (let i = i0; i <= i1; i++) { const w = 1 / (P[i].s * P[i].s); sw += w; st += w * (P[i].t - tm); sy += w * P[i].y; }
+    const tb = st / sw, yb = sy / sw; let stt = 0, sty = 0;
+    for (let i = i0; i <= i1; i++) { const w = 1 / (P[i].s * P[i].s), dt = P[i].t - tm - tb; stt += w * dt * dt; sty += w * dt * (P[i].y - yb); }
+    if (stt < 1e-9) return null;
+    const slope = sty / stt, a = yb - slope * tb;
+    let chi = 0, se = 0;
+    for (let i = i0; i <= i1; i++) { const r = P[i].y - (a + slope * (P[i].t - tm)); chi += (r / P[i].s) ** 2; se += r * r; }
+    const infl = Math.sqrt(Math.max(1, chi / Math.max(1, n - 2))), sd = Math.sqrt(1 / stt) * infl;
+    return { slope, a, tm, rms: Math.sqrt(se / n), sd, rel: Math.abs(slope) > 0.3 ? sd / Math.abs(slope) : 9, n, T: P[i1].t - P[i0].t };
+  }
+
+  /* Нижняя кромка машины по профилю яркости (тёмный низ кузова/тень → светлый асфальт): уточнение в окне ±win px от прогноза. Возвращает { y, g, ok } */
+  function edgeRefine(I, w, h, xc, bw, yPred, win) {
+    const half = Math.max(3, Math.round(0.3 * bw)), xa = Math.max(1, Math.round(xc) - half), xb = Math.min(w - 2, Math.round(xc) + half);
+    const y0 = Math.max(3, Math.floor(yPred - win - 1)), y1 = Math.min(h - 4, Math.ceil(yPred + win + 1));
+    if (xb - xa < 3 || y1 - y0 < 4) return { y: yPred, g: 0, ok: false };
+    const n = y1 - y0 + 5, p = new Float32Array(n), st = xb - xa > 40 ? 2 : 1;
+    for (let j = 0; j < n; j++) { const y = y0 - 2 + j; let sum = 0, c = 0; for (let x = xa; x <= xb; x += st) { sum += I[y * w + x]; c++; } p[j] = sum / c; }
+    let best = -1e9, bj = -1, second = 0;
+    const g = new Float32Array(n);
+    for (let j = 1; j < n - 1; j++) g[j] = 0.5 * (p[j + 1] - p[j - 1]) + 0.25 * (p[j + 2 < n ? j + 2 : j] - p[j - 2 >= 0 ? j - 2 : j]);   // рост яркости вниз, с лёгким сглаживанием
+    for (let j = 2; j < n - 2; j++) { const sc = g[j] - 0.12 * Math.abs(y0 - 2 + j - yPred); if (sc > best) { best = sc; bj = j; } }
+    if (bj < 0) return { y: yPred, g: 0, ok: false };
+    for (let j = 2; j < n - 2; j++) if (Math.abs(j - bj) > 3 && g[j] > second) second = g[j];
+    const gv = g[bj]; let ys = bj;
+    const l = g[bj - 1], c = g[bj], r = g[bj + 1], d = l - 2 * c + r; if (d < -1e-6) ys = bj + cl(0.5 * (l - r) / d, -0.6, 0.6);
+    return { y: y0 - 2 + ys + 0.5, g: gv, ok: gv >= 3.0 && gv >= 1.25 * second };
+  }
+
+  class Track {
+    constructor(id, d, t, cls) {
+      this.id = id; this.t0 = t; this.tLast = t; this.tDet = t; this.vx = 0; this.vy = 0; this.weak = 0;
+      this.G = { X: 0, Z: 0 }; this.vZ = 0; this.Wm = 1.8;   // положение контактной точки на дороге (X боковое, Z вдоль; м), скорость вдоль дороги, ширина машины, м
+      this.x = 0.5 * (d.x0 + d.x1); this.y = d.y1; this.bw = d.x1 - d.x0; this.bh = d.y1 - d.y0;
+      this.cls = [0, 0, 0, 0]; if (cls != null && cls >= 0) this.cls[cls]++;
+      this.hist = [{ t, x: this.x, y: this.y }]; this.P = []; this.brk = 0; this.lk = 0; this.lkBad = 0; this.nDet = 1;
+      this.kmh = null; this.tilde = true; this.dir = 0; this.fit = null; this.minK = Infinity; this.maxK = 0; this.shown = false; this.snap = null; this.snapTaken = false;
+      this.lane = 0; this.ev = []; this.evSeen = new Set(); this.sigPx = 1.2; this.lastGate = null; this.stable = 0; this.vPrev = null; this.why = '';
+      this.Xlast = 0; this.Zlast = 0; this.edge = false; this.uSum = 0; this.uN = 0;
+    }
+    cls_() { let b = 0, bk = -1; for (let k = 0; k < 4; k++) if (this.cls[k] > b) { b = this.cls[k]; bk = k; } return bk >= 0 ? bk : null; }
+  }
+
+  const DEF = {
+    zMin: 5, zMax: 45, laneMargin: 4.5,             // зона замера по расстоянию от камеры и боковой запас от крайних линий, м
+    minSpeedKmh: 8, maxSpeedKmh: 220, minTravelM: 6, minPts: 12,
+    winMin: 0.5, winMax: 3.0, maxRelErr: 0.05, showErr: 0.12, minShowPts: 8, minShowPath: 4,
+    sigPx: 1.2, gateStep: 5, mode: 'C1',            // sigPx — σ контактной точки в пикселях анализа (поза + LK)
+    holdSec: 1.1, blend: 0.14, assocK: 0.65,
+    lkOn: true
+  };
+
+  class Tracker {
+    constructor(cam, aw, ah, cfg) {
+      this.cam = cam; this.aw = aw; this.ah = ah; this.cfg = Object.assign({}, DEF, cfg || {});
+      this.tracks = []; this.nextId = 1; this.road = null; this.cnt = { born: 0, passes: 0, lost: 0 }; this.ph = [];
+    }
+    setRoad(road) { this.road = road; }
+    reset() { this.tracks = []; this.ph = []; }
+    _poseAt(t, fb) { const H = this.ph; if (!H.length) return fb; let b = H[0], d = Math.abs(H[0].t - t); for (const h of H) { const dd = Math.abs(h.t - t); if (dd < d) { d = dd; b = h; } } return b.pose; }
+    // контактная точка → { X, Z (дорога), Zc (от камеры), t }
+    _gnd(pose, x, y) {
+      const g = Wk.ground(this.cam, pose, (x - this.aw / 2) / this.ah, (y - this.ah / 2) / this.ah); if (!g) return null;
+      return { X: g.X, Z: g.Z, Zr: g.Z - pose.Zc, t: g.t };
+    }
+    laneOf(X, Zr, kap) {  // Zr — расстояние до машины от камеры вдоль дороги, м
+      const R = this.road; if (!R || !R.X.length) return 1;
+      const xr = X - (kap || 0) * Zr * Zr * 0.5, B = R.X.slice().sort((a, b) => a - b);
+      let l = 1; while (l < B.length - 1 && xr >= B[l]) l++;
+      return l;
+    }
+    inRoad(X, Zr, kap) {
+      const R = this.road; if (!R || !R.X.length) return true;
+      const xr = X - (kap || 0) * Zr * Zr * 0.5, lo = Math.min(...R.X) - this.cfg.laneMargin, hi = Math.max(...R.X) + this.cfg.laneMargin;
+      return xr >= lo && xr <= hi;
+    }
+    // frame: { gray, prev, pose, t, u, kap }; det: { t, boxes: [{x0,y0,x1,y1,c,s,low}] } | null → { finished: [ps], live }
+    step(fr, det) {
+      const cfg = this.cfg, t = fr.t, pose = fr.pose, aw = this.aw, ah = this.ah, finished = [];
+      // 1) прогноз: наземная точка машины с постоянной скоростью → в кадр по ТЕКУЩЕЙ позе (тряска камеры уже учтена датчиками) → уточнение нижней кромки по профилю яркости
+      this.ph.push({ t, pose }); while (this.ph.length > 45) this.ph.shift();
+      const f2 = this.cam.f * ah;
+      for (const tr of this.tracks) {
+        const dt = Math.min(0.25, Math.max(0, t - tr.tLast)); tr.tLast = t;
+        const pr = Wk.project(this.cam, pose, tr.G.X, tr.G.Z + tr.vZ * dt);
+        if (!pr) { tr.edge = true; continue; }
+        const xP = pr[0] * ah + aw / 2, yP = pr[1] * ah + ah / 2; tr.bw = Math.max(6, f2 * tr.Wm / pr[2]);
+        const win = 2.2 + 0.035 * tr.bw + (tr.weak > 0 ? 2 * tr.weak : 0);
+        const e = edgeRefine(fr.gray, aw, ah, xP, tr.bw, yP, win);
+        tr.x = xP;
+        if (e.ok) { tr.y = e.y; tr.weak = 0; tr.lkOk = true; tr.lk++; } else { tr.y = yP; tr.weak++; tr.lkOk = tr.weak < 5; }
+        tr.lkBad = tr.weak;
+        const g = this._gnd(pose, tr.x, tr.y); if (g) tr.G.Z = g.Z; else tr.G.Z += tr.vZ * dt;
+      }
+      // 2) детекции: привязка (по состоянию на время кадра детектора) и рождение
+      if (det && det.boxes) this._assoc(det, fr);
+      // 3) метрика, ворота, скорость
+      for (const tr of this.tracks) {
+        tr.hist.push({ t, x: tr.x, y: tr.y, X: tr.G.X, Z: tr.G.Z }); while (tr.hist.length > 60) tr.hist.shift();
+        const g = this._gnd(pose, tr.x, tr.y);
+        if (!g) { tr.edge = true; continue; }
+        tr.edge = tr.y > ah - 8 || tr.x - 0.5 * tr.bw < 2 || tr.x + 0.5 * tr.bw > aw - 2;
+        tr.Xlast = g.X; tr.Zlast = g.Zr;
+        const inZone = g.Zr >= cfg.zMin && g.Zr <= cfg.zMax && this.inRoad(g.X, g.Zr, fr.kap) && !tr.edge;
+        if (inZone) {
+          const g2 = this._gnd(pose, tr.x, tr.y + 1), dsdy = g2 ? Math.abs(g2.Zr - g.Zr) : 1;
+          const arc = (fr.kap || 0) ** 2 * g.Zr ** 3 / 6;
+          const sRoad = cfg.mode === 'C1' ? g.Z + arc : g.Zr + arc;
+          { const L = tr.P.length ? tr.P[tr.P.length - 1] : null;   // скачок > ~160 км/ч за кадр — смена кромки/привязки, а не движение
+            if (L && Math.abs(sRoad - L.y) > 1.0 + 45 * Math.max(0.02, t - L.t)) {
+              tr.jn = (tr.jn || 0) + 1;
+              if (tr.jn < 3) continue;                                   // одиночный выброс: точку пропускаем, накопленное не трогаем
+              if (tr.P.length - tr.brk >= cfg.minPts) { tr.lkBad = 99; tr.why = 'lost'; continue; }   // накоплено достаточно, а дальше привязка сорвалась: завершаем по накопленному
+              tr.brk = tr.P.length; tr.ev = []; tr.evSeen = new Set(); tr.why = 'jump';   // в начале жизни: новый уровень держится — окно и ворота заново
+            }
+            tr.jn = 0; }
+          tr.P.push({ t, y: sRoad, s: Math.max(0.05, cfg.sigPx * dsdy), zr: g.Zr, zroad: g.Z + arc, u: fr.u || 0, X: g.X });
+          tr.lane = this.laneOf(g.X, g.Zr, fr.kap);
+          this._gates(tr);
+          this._live(tr, fr);
+          { const nn = tr.P.length; let i0 = nn - 1; while (i0 > Math.max(0, tr.brk) && t - tr.P[i0 - 1].t <= 0.8) i0--; if (nn - i0 >= 6) { const q = wls(tr.P.map(p => ({ t: p.t, y: p.zroad, s: p.s })), i0, nn - 1); if (q) tr.vZ = cl(q.slope, -70, 70); } }
+        }
+      }
+      // 4) завершение
+      const keep = [];
+      for (const tr of this.tracks) {
+        const idle = t - tr.tDet, out = tr.Zlast > cfg.zMax * 1.2 || tr.Zlast < cfg.zMin * 0.6, gone = tr.lkBad > 6 || tr.edge || idle > cfg.holdSec || (tr.lkOk === false && idle > 0.5) || out;
+        if (gone) { const ps = this._finish(tr, t, fr); if (ps) finished.push(ps); else this.cnt.lost++; }
+        else keep.push(tr);
+      }
+      this.tracks = keep;
+      return { finished };
+    }
+    _assoc(det, fr) {
+      const cfg = this.cfg, td = det.t, used = new Set(), boxes = det.boxes.filter(b => !b.low), pd = this._poseAt(td, fr.pose), f2 = this.cam.f * this.ah;
+      const at = tr => { // пиксель трека на момент td — по истории (рамка пришла с задержкой)
+        const H = tr.hist; if (H.length < 2 || td >= H[H.length - 1].t) return { x: tr.x, y: tr.y, X: tr.G.X, Z: tr.G.Z };
+        let i = H.length - 1; while (i > 0 && H[i].t > td) i--;
+        const a = H[i], b = H[Math.min(H.length - 1, i + 1)], f = b.t > a.t ? cl((td - a.t) / (b.t - a.t), 0, 1) : 0;
+        return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, X: a.X + (b.X - a.X) * f, Z: a.Z + (b.Z - a.Z) * f };
+      };
+      const pairs = [];
+      this.tracks.forEach((tr, i) => boxes.forEach((b, j) => {
+        const p = at(tr), bx = 0.5 * (b.x0 + b.x1), bw = b.x1 - b.x0, d = Math.hypot(bx - p.x, b.y1 - p.y), lim = cfg.assocK * Math.max(bw, tr.bw) + 6;
+        if (d < lim && bw > 0.45 * tr.bw && bw < 2.2 * tr.bw) pairs.push({ i, j, d, p });
+      }));
+      pairs.sort((a, b) => a.d - b.d);
+      const doneT = new Set();
+      for (const pr of pairs) {
+        if (doneT.has(pr.i) || used.has(pr.j)) continue; doneT.add(pr.i); used.add(pr.j);
+        const tr = this.tracks[pr.i], b = boxes[pr.j], bx = 0.5 * (b.x0 + b.x1), g = this._gnd(pd, bx, b.y1), bw = b.x1 - b.x0;
+        if (g) {
+          const rX = g.X - pr.p.X, rZ = g.Z - pr.p.Z;
+          tr.G.X += 0.5 * rX;                                   // боковое положение — по детектору
+          if (tr.weak > 2) tr.G.Z += 0.5 * rZ;                  // кромка потеряна — доверяем детектору
+          else if (Math.abs(g.Z - pr.p.Z) > 0.25 * (g.Z - pd.Zc) + 3) { tr.G.Z += 0.5 * rZ; tr.brk = tr.P.length; tr.ev = []; tr.evSeen = new Set(); tr.why = 'brk'; }   // грубое расхождение: окно регрессии заново
+          const dep = Wk.project(this.cam, pd, g.X, g.Z); if (dep) tr.Wm += 0.3 * (bw * dep[2] / f2 - tr.Wm);
+        }
+        tr.tDet = fr.t; tr.nDet++; if (b.c != null && b.c >= 0) tr.cls[b.c]++;
+      }
+      for (let j = 0; j < boxes.length; j++) {
+        if (used.has(j)) continue;
+        const b = boxes[j]; if (b.s != null && b.s < 0.05) continue;
+        const bx = 0.5 * (b.x0 + b.x1), bw = b.x1 - b.x0;
+        if (b.y1 > this.ah - 10 || bw < 8 || b.x0 < 3 || b.x1 > this.aw - 3) continue;
+        const g = this._gnd(pd, bx, b.y1); if (!g || g.Zr < this.cfg.zMin * 0.8 || g.Zr > this.cfg.zMax * 1.15 || !this.inRoad(g.X, g.Zr, fr.kap)) continue;
+        if (this.tracks.some(tr => { const mw = Math.max(bw, tr.bw), ix = Math.min(bx + bw / 2, tr.x + tr.bw / 2) - Math.max(bx - bw / 2, tr.x - tr.bw / 2); return (Math.abs(tr.x - bx) < 0.8 * mw && Math.abs(tr.y - b.y1) < 0.8 * mw) || (ix > 0.3 * Math.min(bw, tr.bw) && Math.abs(tr.y - b.y1) < 1.2 * mw); })) continue;
+        const tr = new Track(this.nextId++, b, fr.t, b.c); tr.tDet = fr.t; tr.G = { X: g.X, Z: g.Z };
+        const dep = Wk.project(this.cam, pd, g.X, g.Z); tr.Wm = dep ? cl(bw * dep[2] / f2, 1.0, 3.2) : 1.8;
+        this.tracks.push(tr); this.cnt.born++;
+      }
+    }
+    // пересечения ворот: C1 — s_road = k·шаг; C2 — Z_cam = k·шаг
+    _gates(tr) {
+      const P = tr.P, n = P.length; if (n < 2) return;
+      const a = P[n - 2], b = P[n - 1], st = this.cfg.gateStep, ya = this.cfg.mode === 'C1' ? a.y : a.zr, yb = this.cfg.mode === 'C1' ? b.y : b.zr;
+      if (tr.brk >= n - 1) return;
+      const lo = Math.min(ya, yb), hi = Math.max(ya, yb);
+      for (let k = Math.ceil(lo / st); k * st <= hi; k++) {
+        const S = k * st; if (!(yb !== ya)) break;
+        const f = (S - ya) / (yb - ya); if (f < 0 || f > 1) continue;
+        const key = k + (yb > ya ? 'u' : 'd'); if (tr.evSeen.has(key)) continue; tr.evSeen.add(key);
+        tr.ev.push({ k, S, t: a.t + f * (b.t - a.t), u: a.u + f * (b.u - a.u), up: yb > ya });
+      }
+    }
+    _gateSpeed(tr) {   // B: прямая по пересечениям ворот в направлении движения (ложные обратные пересечения из-за шума отбрасываются)
+      const up = (tr.v || 0) >= 0, E = tr.ev.filter(e => e.up === up); if (E.length < 3) return null;
+      const P = E.map(e => ({ t: e.t, y: e.S, s: 0.25 }));
+      const f = wls(P, 0, P.length - 1); if (!f) return null;
+      const span = Math.abs(E[E.length - 1].S - E[0].S); if (span < 8) return null;
+      let v = f.slope; if (this.cfg.mode === 'C2') v += E.reduce((s, e) => s + e.u, 0) / E.length;
+      return { v, n: E.length, span };
+    }
+    _live(tr, fr) {
+      const cfg = this.cfg, P = tr.P, n = P.length, t = fr.t, i0min = tr.brk;
+      if (n - i0min < 5) return;
+      // окно расширяется назад, пока погрешность скорости больше maxRelErr
+      let i0 = n - 1, best = null;
+      for (let w = cfg.winMin; w <= cfg.winMax + 1e-6; w += 0.25) {
+        i0 = n - 1; while (i0 > i0min && t - P[i0 - 1].t <= w) i0--;
+        if (n - i0 < 5) continue;
+        const f = wls(P, i0, n - 1); if (!f) continue; best = f;
+        if (f.rel <= cfg.maxRelErr && f.T >= cfg.winMin) break;
+      }
+      if (!best) return;
+      let v = best.slope;
+      if (cfg.mode === 'C2') { let su = 0, c = 0; for (let i = n - 1; i >= 0 && t - P[i].t <= best.T + 1e-6; i--) { su += P[i].u; c++; } v += su / Math.max(1, c); }
+      tr.fit = best; tr.v = v;
+      const kmh = Math.abs(v) * 3.6, path = Math.abs(P[n - 1].y - P[Math.max(i0min, n - 1 - (n - 1 - i0))].y);
+      tr.dir = v < 0 ? -1 : 1;
+      const ok = best.rel <= cfg.showErr && n - i0 >= cfg.minShowPts && best.T >= 0.45 && path >= cfg.minShowPath && kmh >= cfg.minSpeedKmh && kmh <= cfg.maxSpeedKmh;
+      if (ok) {
+        tr.kmh = kmh; tr.tilde = best.rel > cfg.maxRelErr; tr.shown = true;
+        if (tr.vPrev != null && Math.abs(kmh - tr.vPrev) < 12) tr.stable++; else tr.stable = 0;
+        tr.vPrev = kmh; tr.minK = Math.min(tr.minK, kmh); tr.maxK = Math.max(tr.maxK, kmh);
+      }
+    }
+    _finish(tr, t, fr) {
+      const cfg = this.cfg, P = tr.P, n = P.length; this.drops = this.drops || [];
+      if (n - tr.brk < cfg.minPts || !tr.shown) { if (n > 3) this.drops.push('#' + tr.id + ' мало точек/не показан n=' + (n - tr.brk) + ' shown=' + tr.shown); return null; }
+      const i0 = Math.max(0, tr.brk), f = wls(P, i0, n - 1); if (!f) return null;
+      let vA = f.slope; const uAvg = P.slice(i0).reduce((s, p) => s + p.u, 0) / (n - i0);
+      if (cfg.mode === 'C2') vA += uAvg;
+      const kmh = Math.abs(vA) * 3.6, path = Math.abs(P[n - 1].y - P[i0].y);
+      if (kmh < cfg.minSpeedKmh || kmh > cfg.maxSpeedKmh || path < cfg.minTravelM || !(f.rel <= cfg.showErr)) { this.drops.push('#' + tr.id + ' kmh=' + kmh.toFixed(1) + ' путь=' + path.toFixed(1) + ' rel=' + f.rel.toFixed(3)); return null; }
+      const gb = this._gateSpeed(tr), kB = gb ? Math.abs(gb.v) * 3.6 : null, dAB = kB == null ? null : Math.abs(kmh - kB) / Math.max(kmh, kB, 1);
+      const weakB = dAB == null || gb.n < 4 || gb.span < 15, durT = P[n - 1].t - P[i0].t, conf = durT < 1.0 ? 'low' : weakB ? 'mid' : dAB <= 0.08 ? 'high' : dAB <= 0.2 ? 'mid' : 'low';
+      if (conf === 'low' && dAB > 0.35) { this.drops.push('#' + tr.id + ' A=' + kmh.toFixed(1) + ' B=' + kB.toFixed(1) + ' расхождение ' + (100 * dAB).toFixed(0) + '%'); return null; }
+      this.cnt.passes++;
+      return { id: tr.id, lane: Math.max(1, tr.lane), dir: vA < 0 ? -1 : 1, kmh, kmhMin: isFinite(tr.minK) ? Math.min(tr.minK, kmh) : kmh, kmhMax: tr.maxK > 0 ? Math.max(tr.maxK, kmh) : kmh, n: n - i0, rel: Math.max(f.rel, 0.001), path, live: tr.kmh == null ? kmh : tr.kmh, gap: null, t0: P[i0].t, t1: P[n - 1].t, wall: Date.now(), blob: null, snap: tr.snap || null, kmhA: kmh, kmhB: kB, gatesN: gb ? gb.n : 0, conf, cls: tr.cls_(), rms: f.rms };
+    }
+    flush(t, fr) { const out = []; for (const tr of this.tracks) { const ps = this._finish(tr, t, fr); if (ps) out.push(ps); } this.tracks = []; return out; }
+  }
+  return { wls, Track, Tracker, DEF };
+})();
+if (typeof module !== 'undefined') module.exports = WkTracks;
+/* ==== WALK:TRACKS:END ==== */
+
+/* ==== WALK:SENS:BEGIN ====
+ * Режим «Ходьба», часть 6а: настройки, датчики телефона (ориентация, шаги), GPS и электронная стабилизация картинки (EIS).
+ * Зависит от: S, R, video, SW, SH, toast, frameTime (приложение) и Wk, WkImu, WkMotion.
+ */
+const WK_LS = 'ss_walk';
+S.walk = { on: false, H: 1.55, curb: 0.5, stride: 0.78, mode: 'C1', stab: false, imuSrc: 'auto', imuDelay: 0, gps: true, grade: 0, curv: 0, autoRoad: true, grid: true, zoom: 1.1, tau: 0.45 };
+(function wkLoadSettings() {
+  try { const o = JSON.parse(localStorage.getItem(WK_LS) || '{}'); for (const k of Object.keys(S.walk)) if (k !== 'on' && k !== 'stab' && k !== 'grade' && k !== 'curv' && o[k] != null && typeof o[k] === typeof S.walk[k]) S.walk[k] = o[k]; } catch (_) {}
+})();
+function wkSave() { try { const o = Object.assign({}, S.walk); delete o.on; delete o.stab; delete o.grade; delete o.curv; localStorage.setItem(WK_LS, JSON.stringify(o)); } catch (_) {} }
+
+const WKR = { att0: null, run: null };   // служебное состояние режима: ориентация при заморозке кадра, объекты текущего замера
+const WKS = {
+  on: false, hz: 0, dmN: 0, tPrev: 0, a: null, aLp: null, tA: 0, ax: null,
+  fus: new WkImu.Fusion(), bufF: new WkImu.Buf(900), bufR: new WkImu.Buf(900), steps: new WkMotion.Steps(),
+  ros: null, rosN: 0, rosErr: '', useRos: false, chk: { n: 0, dth: 0, dph: 0, ok: null }, tChk: 0,
+  sign: /iPhone|iPad|iPod/i.test(navigator.userAgent) ? -1 : 1, perm: '', gps: null, gpsId: 0, gpsN: 0, gpsErr: ''
+};
+const wkDeg = r => r * 57.29578;
+
+/* ---------- датчики ---------- */
+function wkOnMotion(e) {
+  const ag = e.accelerationIncludingGravity, rr = e.rotationRate;
+  if (!ag || ag.x == null || !rr || rr.alpha == null) return;
+  const t = (e.timeStamp || performance.now()) / 1000, sg = WKS.sign, D = Math.PI / 180;
+  const a = [sg * ag.x, sg * ag.y, sg * ag.z], w = [rr.beta * D, rr.gamma * D, rr.alpha * D];
+  if (WKS.tPrev > 0) { const dt = t - WKS.tPrev; if (dt > 0.001 && dt < 0.5) WKS.hz = WKS.hz ? 0.95 * WKS.hz + 0.05 / dt : 1 / dt; }
+  WKS.tPrev = t; WKS.a = a; WKS.tA = t; WKS.dmN++;
+  WKS.aLp = WKS.aLp ? [WKS.aLp[0] + 0.1 * (a[0] - WKS.aLp[0]), WKS.aLp[1] + 0.1 * (a[1] - WKS.aLp[1]), WKS.aLp[2] + 0.1 * (a[2] - WKS.aLp[2])] : a.slice();
+  if (!S.frozen) { const ax = WkImu.snapAxes(WKS.aLp, WKS.ax); if (ax) WKS.ax = ax; }
+  const q = WKS.fus.step(w, a, t);
+  if (!q) return;
+  WKS.bufF.push(t, q);
+  const aw = WkImu.qRot(q, a);
+  WKS.steps.push(t, aw[2]);
+  if (t - WKS.tChk > 0.25) { WKS.tChk = t; wkRosCheck(); }
+  const X = WKR.run; if (X && X.log) X.sLog.length < 40000 && (X.k % 2 === 0) && X.sLog.push([+t.toFixed(3), +w[0].toFixed(4), +w[1].toFixed(4), +w[2].toFixed(4), +a[0].toFixed(3), +a[1].toFixed(3), +a[2].toFixed(3)]);
+}
+function wkRosStart() {
+  WKS.ros = null; WKS.rosN = 0; WKS.rosErr = '';
+  if (S.walk.imuSrc === 'dm') return;
+  try {
+    if (typeof RelativeOrientationSensor === 'undefined') { WKS.rosErr = 'нет API'; return; }
+    const s = new RelativeOrientationSensor({ frequency: 60 });
+    s.addEventListener('reading', () => {
+      const q = s.quaternion; if (!q) return;
+      WKS.bufR.push((s.timestamp || performance.now()) / 1000, WkImu.qNorm([q[0], q[1], q[2], q[3]])); WKS.rosN++;
+    });
+    s.addEventListener('error', ev => { WKS.rosErr = (ev && ev.error && ev.error.name) || 'ошибка'; WKS.useRos = false; });
+    s.start(); WKS.ros = s;
+  } catch (e) { WKS.rosErr = e && e.name ? e.name : 'ошибка'; WKS.ros = null; }
+}
+// проверка готового кватерниона: наклон и крен должны совпадать с тем, что даёт гравитация (иначе иная конвенция осей — берём свой фильтр)
+function wkRosCheck() {
+  const C = WKS.chk, ax = WKS.ax;
+  if (S.walk.imuSrc === 'dm' || !WKS.ros || WKS.rosN < 20 || !ax) { WKS.useRos = false; return; }
+  const lr = WKS.bufR.last(), qf = lr && WKS.bufF.at(lr.t); if (!lr || !qf) return;
+  const aR = WkImu.attitude(lr.q, ax), aF = WkImu.attitude(qf, ax);
+  const dth = Math.abs(aR.th - aF.th), dph = Math.abs(Wk.wrap(aR.ph - aF.ph));
+  C.dth = C.n ? C.dth + 0.08 * (dth - C.dth) : dth; C.dph = C.n ? C.dph + 0.08 * (dph - C.dph) : dph; C.n++;
+  if (C.n >= 25) { const ok = C.dth < 4 * Wk.D2R && C.dph < 4 * Wk.D2R; if (ok !== C.ok) { C.ok = ok; if (!ok) toast('Готовая ориентация телефона не совпала с гравитацией — использую свой фильтр.', 3500); } WKS.useRos = ok; }
+}
+async function wkSensStart() {
+  if (WKS.on) return true;
+  if (typeof DeviceMotionEvent === 'undefined') { toast('Датчики движения недоступны на этом устройстве.'); return false; }
+  try {
+    if (typeof DeviceMotionEvent.requestPermission === 'function') { const r = await DeviceMotionEvent.requestPermission(); WKS.perm = r; if (r !== 'granted') { toast('Доступ к датчикам движения запрещён: режим «Ходьба» без датчиков работает слабо.', 5000); return false; } }
+  } catch (e) { toast('Не удалось получить доступ к датчикам: ' + (e && e.message ? e.message : e), 5000); return false; }
+  WKS.on = true; WKS.dmN = 0; WKS.tPrev = 0; WKS.hz = 0; WKS.fus.reset(); WKS.steps.reset(); WKS.chk = { n: 0, dth: 0, dph: 0, ok: null }; WKS.useRos = false;
+  window.addEventListener('devicemotion', wkOnMotion);
+  wkRosStart();
+  setTimeout(() => { if (WKS.on && WKS.dmN === 0) toast('Датчики не передают данные: проверь, что в браузере разрешены «Датчики движения и ориентации».', 6000); }, 2500);
+  return true;
+}
+function wkSensStop() {
+  window.removeEventListener('devicemotion', wkOnMotion);
+  try { if (WKS.ros) WKS.ros.stop(); } catch (_) {}
+  WKS.ros = null; WKS.on = false; wkEisSync();
+}
+const wkBuf = () => (WKS.useRos ? WKS.bufR : WKS.bufF);
+function wkQAt(t) { const b = wkBuf(); return b.last() ? b.at(t) : null; }
+function wkAtt(t) { const q = wkQAt(t), ax = WKS.ax; return q && ax ? WkImu.attitude(q, ax) : null; }
+const wkSrcName = () => (!WKS.on ? 'выкл' : (WKS.useRos ? 'готовый кватернион' : 'гироскоп+гравитация'));
+// заморозка кадра: запоминаем оси камеры и ориентацию телефона в этот момент — это «калибровочная» ориентация
+function wkOnFreeze() {
+  WKR.att0 = null;
+  if (!WKS.on || !WKS.aLp) return;
+  const ax = WkImu.snapAxes(WKS.aLp, WKS.ax) || WKS.ax; if (!ax) return;
+  WKS.ax = ax;
+  const lf = WKS.bufF.last(), lr = WKS.bufR.last();
+  WKR.att0 = { F: lf ? WkImu.attitude(lf.q, ax) : null, R: lr ? WkImu.attitude(lr.q, ax) : null };
+}
+
+/* ---------- GPS ---------- */
+function wkGpsStart() {
+  if (WKS.gpsId || !navigator.geolocation || !S.walk.gps) return;
+  try {
+    WKS.gpsId = navigator.geolocation.watchPosition(p => {
+      const c = p.coords; WKS.gpsN++; WKS.gps = { t: performance.now() / 1000, speed: c.speed, acc: c.accuracy };
+      const X = WKR.run; if (X && c.speed != null && isFinite(c.speed)) X.gpsNew = { speed: c.speed, acc: c.accuracy };
+    }, e => { WKS.gpsErr = e && e.code ? String(e.code) : 'ошибка'; }, { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
+  } catch (_) { WKS.gpsId = 0; }
+}
+function wkGpsStop() { try { if (WKS.gpsId) navigator.geolocation.clearWatch(WKS.gpsId); } catch (_) {} WKS.gpsId = 0; WKS.gps = null; }
+
+/* ---------- Электронная стабилизация картинки (EIS) ----------
+ * Опорная ориентация — медленный фильтр кватерниона камеры (τ ≈ 0,45 с): быстрые дрожания телефона отдаёт гироскоп, намеренный поворот проходит.
+ * Точка кадра, куда смотрела бы «опорная» камера, ищется в текущем кадре; картинка сдвигается и поворачивается так, чтобы она встала в центр; запас — увеличение (zoom).
+ * То же аффинное преобразование применяется к меткам поверх видео (drawWalk). Анализ скорости идёт по исходным пикселям — EIS его не касается. */
+const WKE = { qlp: null, t: null, A: null, loop: 0 };
+const wkLim = (x, l) => l * Math.tanh(x / l);
+function wkEisClear() { WKE.A = null; WKE.qlp = null; WKE.t = null; try { if (video.style.transform) { video.style.transform = ''; video.style.willChange = ''; } } catch (_) {} }
+function wkEisFrame(now, md, t, lat) {
+  const W = S.walk;
+  if (!W.stab || !WKS.on || !WKS.ax || S.srcKind !== 'camera') { if (WKE.A) wkEisClear(); return; }
+  const vw = video.videoWidth, vh = video.videoHeight; if (!vw || !vh) return;
+  const q = wkQAt(t - lat + W.imuDelay / 1000); if (!q) return;
+  if (!WKE.qlp || WKE.t == null || t - WKE.t > 1.5) { WKE.qlp = q; WKE.t = t; }
+  const dt = Math.min(0.2, Math.max(0, t - WKE.t)); WKE.t = t;
+  WKE.qlp = WkImu.qSlerp(WKE.qlp, q, 1 - Math.exp(-dt / W.tau));
+  const ax = WKS.ax, rot = (qq, v) => WkImu.qRot(qq, v), dot = Wk.dot;
+  const cr = rot(q, ax.ex), cd = rot(q, ax.ey), cf = rot(q, ax.ez), rr = rot(WKE.qlp, ax.ex), rf = rot(WKE.qlp, ax.ez);
+  const fx = dot(rf, cr), fy = dot(rf, cd), fz = dot(rf, cf);
+  if (fz < 0.3) return;
+  const k = Math.min(SW / vw, SH / vh), hD = vh * k, wD = vw * k, run = WKR.run, f = run ? run.cam.f : 1.15, fpx = f * hD;
+  const z = W.zoom, lx = Math.max(2, 0.45 * (z - 1) * wD), ly = Math.max(2, 0.45 * (z - 1) * hD);
+  const px = wkLim(fpx * fx / fz, lx), py = wkLim(fpx * fy / fz, ly), rho = wkLim(Math.atan2(dot(rr, cd), dot(rr, cr)), 0.06);
+  const th = -rho, a = z * Math.cos(th), b = z * Math.sin(th), c = -b, d = a, cx = SW / 2, cy = SH / 2;
+  const e = cx - (a * (cx + px) + c * (cy + py)), f2 = cy - (b * (cx + px) + d * (cy + py));
+  WKE.A = { a, b, c, d, e, f: f2 };
+  video.style.transformOrigin = '0 0'; video.style.willChange = 'transform';
+  video.style.transform = 'matrix(' + a.toFixed(5) + ',' + b.toFixed(5) + ',' + c.toFixed(5) + ',' + d.toFixed(5) + ',' + e.toFixed(2) + ',' + f2.toFixed(2) + ')';
+}
+const wkEisPt = (x, y) => { const A = WKE.A; return A ? [A.a * x + A.c * y + A.e, A.b * x + A.d * y + A.f] : [x, y]; };
+function wkEisTick() {
+  if (!WKE.loop) return;
+  const cb = (now, md) => {
+    if (!WKE.loop) return;
+    try { const t = md && md.captureTime != null ? md.captureTime / 1000 : (md && md.presentationTime != null ? md.presentationTime / 1000 : now / 1000); wkEisFrame(now, md, t, md && md.captureTime != null ? 0 : 0.05); } catch (_) {}
+    wkEisTick();
+  };
+  if (typeof video.requestVideoFrameCallback === 'function') video.requestVideoFrameCallback(cb); else requestAnimationFrame(tt => cb(tt, null));
+}
+// включает/выключает фоновый цикл EIS для живого просмотра (в замере EIS ведёт цикл кадров режима «Ходьба»)
+function wkEisSync() {
+  const W = S.walk, want = W.stab && S.srcKind === 'camera' && WKS.on && ((S.mode === 'wizard' && !S.showFrozen) || (S.mode === 'run' && W.on));
+  const live = want && S.mode === 'wizard';
+  if (live && !WKE.loop) { WKE.loop = 1; wkEisTick(); }
+  if (!live) WKE.loop = 0;
+  if (!want) wkEisClear();
+  const b = document.getElementById('wkStabBtn'); if (b) { b.classList.toggle('on', !!W.stab); b.firstElementChild.textContent = W.stab ? 'Стабилизация: вкл' : 'Стабилизация: выкл'; }
+  const bar = document.getElementById('wkBar'); if (bar) bar.hidden = !(S.srcKind === 'camera' && S.mode === 'wizard' && !S.showFrozen);
+}
+async function wkToggleStab() {
+  const W = S.walk;
+  if (!W.stab) { if (!(await wkSensStart())) return; W.stab = true; toast('Стабилизация картинки включена: изображение немного увеличено по краям.', 3000); }
+  else W.stab = false;
+  wkSave(); wkEisSync(); if (S.mode === 'run') wkHud(); else if (S.step === 0) renderStep(true);
+}
+/* ==== WALK:SENS:END ==== */
+
+/* ==== WALK:RUN:BEGIN ====
+ * Режим «Ходьба», часть 6б: калибровка камеры по мастеру, запуск, цикл кадра, детектор, проезды, рисование, верхняя панель, журнал.
+ */
+// Камера и дорога из мастера: ворота (расстояния между ними) → f, θ, H; границы полос → рыскание и боковые положения линий
+function wkCalibrate() {
+  const F = S.frozen, asp = F.w / F.h, g = GS(0), W = S.walk;
+  const vs = gateVr(g, asp), ds = gateS(g), msg = [];
+  if (vs.length < 3) return { ok: false, msg: 'Нужно не меньше трёх ворот.' };
+  let fit = Wk.fitCameraRel(vs, ds, W.H, { asp }), cam = { f: fit.f, H: fit.H };
+  const bounds = sortedBounds();
+  // крен камеры при заморозке — абсолютный, по гравитации (дорога поперёк считается ровной): без него боковые цели «съезжают» по высоте (при съёмке с тротуара они далеко от центра кадра)
+  const a0 = S.srcKind === 'camera' && WKR.att0 && (WKS.useRos ? WKR.att0.R || WKR.att0.F : WKR.att0.F || WKR.att0.R), ph0 = a0 && isFinite(a0.ph) && Math.abs(a0.ph) < 0.12 ? a0.ph : 0;
+  let road = Wk.setupRoad(cam, { psi: 0, th: fit.th, ph: ph0 }, bounds, asp);
+  fit = Wk.fitCameraRel(vs, ds, W.H, { asp, psi: road.psi }); cam = { f: fit.f, H: fit.H };
+  road = Wk.setupRoad(cam, { psi: road.psi, th: fit.th, ph: ph0 }, bounds, asp);
+  if (!road.X.length || !road.X.every(isFinite)) return { ok: false, msg: 'Не удалось определить положение границ полос — проверь линии на шаге «Границы полос».' };
+  if (fit.rmsPct > 5) msg.push('Невязка калибровки ворот ' + fmt(fit.rmsPct, 1) + ' % — проверь ворота и расстояния.');
+  if (Math.max(...road.spread.filter(isFinite)) > 1.0) msg.push('Границы полос не параллельны друг другу или дороге (разброс ' + fmt(Math.max(...road.spread.filter(isFinite)), 1) + ' м) — выпрями линии.');
+  if (road.vpErr != null && Math.abs(road.vpErr) > 0.05) msg.push('Горизонт по линиям полос и по воротам расходится на ' + fmt(Math.abs(road.vpErr) * 100, 0) + ' % высоты кадра.');
+  if (fit.f < 0.7 || fit.f > 2.2) msg.push('Фокус ' + fmt(fit.f, 2) + ' (в высотах кадра) необычный — расставь ворота шире.');
+  const lo = Math.min(...road.X), hi = Math.max(...road.X);
+  if (hi - lo < 2 || hi - lo > 30) msg.push('Ширина дороги по границам ' + fmt(hi - lo, 1) + ' м выглядит странно.');
+  return { ok: true, cam, cal: { th: fit.th, ph: ph0, psi: road.psi }, roadX: road.X, fit, road, asp, msg, ph0 };
+}
+
+async function startWalk() {
+  recalc();
+  const A = calsOk(); if (!A.ok) { toast(A.msg); return; }
+  const btn = $('btnNext'); btn.disabled = true;
+  try {
+    const W = S.walk, C = wkCalibrate();
+    if (!C.ok) { toast(C.msg, 5000); btn.disabled = false; return; }
+    if (S.srcKind === 'camera' && !WKS.on) await wkSensStart();
+    // детектор: в режиме «Ходьба» основной — YOLOv8n (в ⚙ можно вернуть MediaPipe)
+    if (CONFIG.stab.detect.engine !== 'yolo' && VD.st !== 'loading' && !WKR.engineAsked) {
+      WKR.engineAsked = true;
+      let prev = null; try { prev = localStorage.getItem('ss_engine'); } catch (_) {}
+      vdSwitch('yolo');
+      try { if (prev == null) localStorage.removeItem('ss_engine'); else localStorage.setItem('ss_engine', prev); } catch (_) {}
+    }
+    if (VD.st === 'loading') { setMsg('Загрузка детектора машин…'); await vdWait(90000); }
+    if (VD.st === 'ready') {
+      const fw = video.videoWidth, fh = video.videoHeight, [ww, wh] = VD.mode === 'worker' ? vdBmpSize(fw, fh) : [fw, fh];
+      if (ww > 0 && VD.warm !== VD.mode + ww + 'x' + wh) { setMsg('Прогрев детектора…'); await vdWarm(ww, wh); }
+    } else toast('Детектор машин ещё не готов: скорости машин появятся, когда он загрузится (нужен интернет или файлы models/yolov8n.onnx).', 6000);
+    setMsg('');
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (Math.abs((vw / vh) / (S.frozen.w / S.frozen.h) - 1) > 0.03) { toast('Ориентация камеры изменилась с момента заморозки кадра. Верни её и начни заново.', 6000); btn.disabled = false; return; }
+    const sc = CONFIG.analysisWidth / Math.max(vw, vh), aw = Math.max(64, Math.round(vw * sc)), ah = Math.max(64, Math.round(vh * sc));
+    const ac = document.createElement('canvas'); ac.width = aw; ac.height = ah;
+    const ax = ac.getContext('2d', { willReadFrequently: true }); ax.imageSmoothingEnabled = true; ax.imageSmoothingQuality = CONFIG.smoothing;
+    // ориентация телефона в момент заморозки кадра — опорная; нет её — берём текущую
+    let att0 = null;
+    if (S.srcKind === 'camera' && WKS.on) {
+      const a0 = WKR.att0 && (WKS.useRos ? WKR.att0.R || WKR.att0.F : WKR.att0.F || WKR.att0.R);
+      att0 = a0 || wkAtt(performance.now() / 1000);
+      if (!a0) toast('Ориентация при заморозке кадра не записана — держи телефон так же, как при калибровке.', 5000);
+    }
+    const eng = new WkMotion.PoseEngine(C.cam, C.cal, att0, { autoRoad: W.autoRoad });
+    const odo = new WkMotion.Odo({ stride: W.stride });
+    const X = WKR.run = {
+      cam: C.cam, cal: C.cal, roadX: C.roadX, fit: C.fit, eng, odo, vo: new WkVis.VisOdo(C.cam, aw, ah, {}), tk: new WkTracks.Tracker(C.cam, aw, ah, { mode: W.mode }),
+      gA: new Uint8Array(aw * ah), gB: new Uint8Array(aw * ah), flip: 0, prev: null, k: 0, tStep: -9, gpsNew: null, w0: 0, detQ: [], pose: null, att: null, roadN: 0,
+      log: [], sLog: [], passLog: [], pos: new Map(), ghosts: [], t0: null, att0,
+      det: { rq: null, last: 0, iv: 120, n: 0, lag: 0, fail: 0 }, info: C.msg
+    };
+    X.tk.setRoad({ X: C.roadX });
+    Object.assign(R, {
+      aw, ah, ax, gray: X.gA, geo: null, vdCrop: null, stab: null, stabOn: false, dyH: [], det: null, trk: null, p: [0, 0, 0], prevP: null, gate: null, stabState: 'off',
+      good: 0, bad: 0, ghosts: [], lastT: null, tNow: 0, timeMode: null, fpsLog: [], paused: false, ended: false, geoBad: false, hudT: 0,
+      procEma: 0, refEma: 0, refineOff: false, anIv: 1000 / CONFIG.perf.maxFps, lvl: 0, hiN: 0, loN: 0, pfRing: [], pfT: null, pfW: 0, pfSlow: 0, srcT: null, srcDt: 0, alT: 0, nProc: 0, lastLow: 0, t0wall: performance.now(), shiftPx: 0, stabInfo: null, nBlobs: 0, lastRes: null, cnt: null, log: [], missT: -9, vdSeen: -1, blobs: []
+    });
+    R.rvfc = 0; R.raf = 0; R.fg = null; R.vc = new Map(); R.vioPre = new Map();
+    S.viol.on = false;
+    S.mode = 'run'; appEl.classList.add('run'); document.body.classList.add('running');
+    $('hud').hidden = false; $('drawer').hidden = false; $('laneTabs').hidden = true; $('btnFit').hidden = true; hideLoupe();
+    $('fileBar').hidden = S.srcKind !== 'file'; R.fileBar = $('fileBar').firstElementChild;
+    $('btnRestart').hidden = S.srcKind !== 'file';
+    $('btnPause').textContent = '⏸ Пауза';
+    video.style.visibility = 'visible';
+    resizeStage(); setViewFrame(S.frozen.w, S.frozen.h);
+    if (S.srcKind === 'file') { video.playbackRate = 1; await seekTo(S.fromStart ? 0 : (S.frozen.t || 0)); toast('Видеофайл: датчиков телефона нет — тряска камеры не компенсируется, скорость и поза считаются только по картинке.', 6000); }
+    R.running = true;
+    wkGpsStart(); wkEisSync(); wkHud();
+    renderDrawer(); updateHud(true); updateLevelVisibility(); wakeOn();
+    try { await video.play(); } catch (e) { toast('Видео не запустилось автоматически: нажми «Пауза», затем «Продолжить».'); }
+    scheduleFrame();
+    redraw();
+    if (C.msg.length) toast('⚠ ' + C.msg[0], 7000);
+  } catch (e) { toast('Не удалось начать замер: ' + (e && e.message ? e.message : e)); R.running = false; try { console.error(e); } catch (_) {} }
+  btn.disabled = false;
+}
+
+// кадр: поза камеры (датчики + путь + визуальные поправки) → визуальная одометрия → подгонка дороги → трекер машин
+function processFrameWalk(now, md) {
+  if (R.paused || R.ended) return;
+  const X = WKR.run, vw = video.videoWidth, vh = video.videoHeight;
+  if (!X || !vw || !vh || video.readyState < 2) return;
+  const t = frameTime(now, md), cam = S.srcKind === 'camera', lat = (R.timeMode === 'capture' || !cam) ? 0 : 0.05, W = S.walk;
+  wkEisFrame(now, md, t, lat);
+  if (R.lastT !== null && t <= R.lastT + 1e-6) return;
+  const dS = R.srcT != null ? t - R.srcT : 0; R.srcT = t;
+  if (dS > 0 && dS < 0.25) R.srcDt = R.srcDt ? 0.9 * R.srcDt + 0.1 * dS : dS;
+  if (R.lastT !== null && t - R.lastT < R.anIv / 1000 - 0.5 * (R.srcDt || 0.0167)) return;
+  logFps(now, md);
+  if (Math.abs((vw / vh) / (S.frozen.w / S.frozen.h) - 1) > 0.03) { R.geoBad = true; R.lastT = t; setMsg('Ориентация изменилась. Верни телефон как при калибровке.'); updateHud(); redraw(); return; }
+  if (R.geoBad) { R.geoBad = false; setMsg(''); }
+  const tW0 = performance.now();
+  R.lastT = t; R.tNow = t; if (X.t0 == null) X.t0 = t;
+  const aw = R.aw, ah = R.ah, gray = X.flip ? X.gA : X.gB; X.flip ^= 1;
+  R.ax.drawImage(video, 0, 0, aw, ah);
+  const px = R.ax.getImageData(0, 0, aw, ah).data;
+  for (let i = 0, j = 0; i < gray.length; i++, j += 4) gray[i] = (77 * px[j] + 150 * px[j + 1] + 29 * px[j + 2]) >> 8;
+  const { eng, odo, tk, vo } = X, st = WKS.steps.out, cad = cam && WKS.on ? st.cadence : 0;
+  // свой путь и скорость
+  odo.predict(t);
+  if (X.gpsNew) { odo.gpsMeas(X.gpsNew.speed, X.gpsNew.acc, cad, t); X.gpsNew = null; }
+  if (cam && WKS.on) {
+    if (st.walking && t - X.tStep > 0.4) { odo.stepMeas(cad, t); X.tStep = t; }
+    else if (st.stationary && t - X.tStep > 0.3) { odo.zupt(t); X.tStep = t; }
+  }
+  // поза камеры
+  eng.alphaManual = Math.atan(W.grade / 100); eng.kappaManual = W.curv; eng.autoRoad = W.autoRoad;
+  const att = cam && WKS.on ? wkAtt(t - lat + W.imuDelay / 1000) : null; X.att = att;
+  const pose = eng.pose(att, odo.w); pose.ax = Wk.axes(pose.psi, pose.th, pose.ph);
+  const excl = (x, y) => { for (const c of tk.tracks) if (x > c.x - 0.7 * c.bw && x < c.x + 0.7 * c.bw && y > c.y - 1.1 * c.bh && y < c.y + 8) return true; return false; };
+  const m = vo.update(gray, pose, t, odo.u, excl); if (m) odo.visMeas(m.u, m.sigma, cad, t);
+  // подгонка дороги: линии полос в кадре → поправки к боковому положению, рысканию, уклону, кривизне
+  if (W.autoRoad && X.k > 10 && (X.k & 1) === 0) {
+    const preds = [], kp = eng.kap;
+    for (let ki = 0; ki < X.roadX.length; ki++) for (const Z of [8, 11, 14, 18, 23, 29, 36]) {
+      const pr = Wk.project(X.cam, pose, X.roadX[ki] + kp * Z * Z * 0.5, pose.Zc + Z); if (!pr) continue;
+      preds.push({ k: ki, x: pr[0] * ah + aw / 2, y: pr[1] * ah + ah / 2, win: 9 + 70 / Z + Math.min(30, 14 * Math.max(0, t - eng.vis.t - 0.3)), wm: Math.max(1.5, X.cam.f * ah * 0.13 / Z) });
+    }
+    const hits = WkVis.lineSamples(gray, aw, ah, preds, 6).filter(h => !excl(h.x, h.y));
+    const fit = WkVis.roadFit(X.cam, pose, { X: X.roadX }, hits.map(h => ({ k: h.k, u: (h.x - aw / 2) / ah, v: (h.y - ah / 2) / ah, w: h.conf })), { ah, kappaPrev: kp });
+    if (fit && fit.q > 0.05) { fit.d.kappa -= eng.kappaManual; eng.applyRoad(fit.d, fit.q, t, X.k < 90 ? 4 : 1); X.roadN++; }
+  }
+  const poseNow = eng.pose(att, odo.w); poseNow.ax = Wk.axes(poseNow.psi, poseNow.th, poseNow.ph); X.pose = poseNow;
+  // машины
+  wkDetect(t, vw, vh);
+  const det = X.detQ.length ? X.detQ.shift() : null, vpN = Wk.vanish(X.cam, poseNow);
+  const r = tk.step({ gray, prev: X.prev, pose: poseNow, t, u: odo.u, kap: eng.kap, hy: vpN ? vpN[1] * ah + ah / 2 : ah * 0.4 }, det);
+  for (const tr of tk.tracks) {
+    if (!tr.shown) continue;
+    X.pos.set(tr.id, { x: tr.x, y: tr.y, bw: tr.bw, lane: Math.max(1, tr.lane), dir: tr.dir, tilde: tr.tilde });
+    if (!tr.snapTaken && tr.kmh != null && tr.P.length >= 20 && tr.stable >= 3) { tr.snapTaken = true; wkSnap(tr); }
+  }
+  if (X.pos.size > 300) X.pos.delete(X.pos.keys().next().value);
+  for (const ps of r.finished) wkPass(ps);
+  X.prev = gray;
+  if (X.log.length < 36000) X.log.push([+(t - X.t0).toFixed(3), att ? +wkDeg(att.th).toFixed(2) : null, att ? +wkDeg(att.ph).toFixed(2) : null, att ? +wkDeg(att.hd).toFixed(2) : null, +wkDeg(poseNow.psi).toFixed(2), +wkDeg(poseNow.th).toFixed(2), +wkDeg(poseNow.ph).toFixed(2), +poseNow.Xc.toFixed(2), +odo.u.toFixed(2), +odo.w.toFixed(2), +wkDeg(eng.alpha).toFixed(2), +wkDeg(eng.psiOff).toFixed(2), +eng.kappa.toFixed(5), +cad.toFixed(2), tk.tracks.length, +eng.vis.q.toFixed(2), m ? +m.u.toFixed(2) : null]);
+  X.k++;
+  const dtp = performance.now() - tW0; R.procEma = R.procEma ? 0.9 * R.procEma + 0.1 * dtp : dtp; R.nProc++;
+  autoLoad(performance.now());
+  updateHud(); redraw();
+}
+
+/* ---------- детектор машин (YOLO в воркере; запасной вариант — MediaPipe в основном потоке) ---------- */
+function wkDetect(t, vw, vh) {
+  const X = WKR.run, D = X.det, now = performance.now(), dc = CONFIG.stab.detect;
+  if (VD.st !== 'ready' || !(VD.w || VD.det)) return;
+  D.iv = VD.mode === 'worker' ? 100 : Math.max(dc.everyMs, VD.ms / dc.share);
+  if (now - D.last < D.iv) return;
+  if (VD.mode === 'worker' && VD.w) {
+    if (D.rq && now - D.rq.wall > 4000) { D.rq = null; D.fail++; }
+    if (D.rq) return;
+    D.last = now;
+    const [bw, bh] = vdBmpSize(vw, vh), id = ++VD.id, rq = D.rq = { id, t, wall: now };
+    const bo = bw < vw && !VD.noRs ? { resizeWidth: bw, resizeHeight: bh, resizeQuality: 'low' } : undefined;
+    createImageBitmap(video, bo).then(
+      bmp => { if (VD.w && D.rq === rq) VD.w.postMessage({ type: 'detect', id, bmp, w: bmp.width, h: bmp.height }, [bmp]); else bmp.close(); },
+      () => { if (D.rq === rq) D.rq = null; VD.noRs = 1; });
+  } else if (VD.det) {
+    D.last = now;
+    const t0 = performance.now(); let res;
+    try { res = VD.det.detectForVideo(video, vdTs()); } catch (e) { return; }
+    const kx = R.aw / vw, ky = R.ah / vh, boxes = [];
+    for (const d of res.detections || []) {
+      const b = d.boundingBox; if (!b) continue;
+      const c = d.categories && d.categories[0], s = c ? c.score : 1;
+      boxes.push({ x0: b.originX * kx, y0: b.originY * ky, x1: (b.originX + b.width) * kx, y1: (b.originY + b.height) * ky, c: vcCode(c && c.categoryName), s, low: s < dc.score });
+    }
+    VD.ms = 0.8 * VD.ms + 0.2 * (performance.now() - t0); D.n++;
+    X.detQ.push({ t, boxes }); if (X.detQ.length > 4) X.detQ.shift();
+  }
+}
+function wkOnDet(m) {   // ответ воркера на запрос режима «Ходьба» (вызывается из vdOnMsg)
+  const X = WKR.run, D = X && X.det, rq = D && D.rq; if (!rq || rq.id !== m.id) return;
+  D.rq = null; D.n++; D.fail = 0; VD.wErr = 0;
+  const kx = R.aw / m.w, ky = R.ah / m.h, sc = CONFIG.stab.detect.score, boxes = [];
+  for (const b of m.boxes) boxes.push({ x0: b[0] * kx, y0: b[1] * ky, x1: (b[0] + b[2]) * kx, y1: (b[1] + b[3]) * ky, c: b[5], s: b[4], low: b[4] < sc });
+  X.detQ.push({ t: rq.t, boxes }); if (X.detQ.length > 4) X.detQ.shift();
+  VD.ms = 0.8 * VD.ms + 0.2 * m.ms; D.lag = 0.8 * D.lag + 0.2 * (performance.now() - rq.wall);
+}
+
+/* ---------- проезды ---------- */
+function wkPass(ps) {
+  const X = WKR.run; if (!X) return;
+  R.vc = R.vc || new Map(); const n = [0, 0, 0, 0]; if (ps.cls != null) n[ps.cls] = 1; R.vc.set(ps.id, { n, last: ps.cls });
+  const p = X.pos.get(ps.id); if (p) { X.ghosts.push(Object.assign({}, p, { id: ps.id, kmh: ps.kmh, until: R.tNow + 1.0 })); X.pos.delete(ps.id); }
+  if (X.t0 != null && ps.t0 - X.t0 < 5) { ps.warm = true; if (ps.conf !== 'low') ps.conf = 'low'; }   // первые ~5 с: фильтры поз и дороги ещё сходятся
+  onPass(ps);
+  const rec = S.passes[0];
+  if (rec && rec.trackId === ps.id) { rec.q = ps.conf === 'low' ? 'низкое' : 'ok'; rec.conf = ps.conf; rec.kmhA = ps.kmhA; rec.kmhB = ps.kmhB; }
+  X.passLog.push({ warm: !!ps.warm, id: ps.id, t0: +(ps.t0 - X.t0).toFixed(2), t1: +(ps.t1 - X.t0).toFixed(2), lane: ps.lane, dir: ps.dir, kmh: +ps.kmh.toFixed(1), kmhA: +ps.kmhA.toFixed(1), kmhB: ps.kmhB != null ? +ps.kmhB.toFixed(1) : null, rel: +ps.rel.toFixed(4), path: +ps.path.toFixed(1), n: ps.n, conf: ps.conf, cls: ps.cls, self: +(X.odo.u * 3.6).toFixed(1), mode: S.walk.mode });
+}
+function wkSnap(tr) {   // снимок кадра с меткой — по первому устойчивому значению
+  try {
+    const vw = video.videoWidth, vh = video.videoHeight; if (!vw) return;
+    const k = Math.min(1, CONFIG.ui.snapMaxW / Math.max(vw, vh)), w = Math.round(vw * k), h = Math.round(vh * k);
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d'); g.drawImage(video, 0, 0, w, h);
+    const sx = w / R.aw, sy = h / R.ah, big = Math.max(20, Math.round(w / 26));
+    drawTag(g, { W: w, x: tr.x * sx, yDot: tr.y * sy, yTop: (tr.y - 0.85 * tr.bw) * sy, kmh: tr.kmh, dir: tr.dir, lane: Math.max(1, tr.lane), id: tr.id, tilde: tr.tilde, kind: tagKind(tr.kmh, S.limit), big }, []);
+    const fs = Math.round(big * 0.6);
+    g.font = '600 ' + fs + 'px ' + TAG_FONT; g.textAlign = 'left'; g.textBaseline = 'middle';
+    g.fillStyle = 'rgba(0,0,0,.6)'; g.fillRect(0, h - fs * 1.9, w, fs * 1.9);
+    g.fillStyle = '#fff'; g.fillText(new Date().toLocaleString('ru-RU') + ' · лимит ' + S.limit + ' км/ч · ходьба · оценка ±10–15 %', 8, h - fs * 0.95);
+    c.toBlob(bl => { if (bl) tr.snap = URL.createObjectURL(bl); }, 'image/jpeg', 0.78);
+  } catch (e) { /* снимок необязателен */ }
+}
+function wkFlush() {
+  const X = WKR.run; if (!X) return;
+  for (const ps of X.tk.flush(R.tNow)) wkPass(ps);
+  X.tk.reset(); X.detQ.length = 0; X.det.rq = null; X.vo.reset(); X.prev = null;
+}
+function wkStop() {
+  wkGpsStop();
+  if (WKR.run) { WKR.last = WKR.run; WKR.run = null; }
+  wkEisClear(); wkEisSync();
+  const h = $('hudWalk'); if (h) h.hidden = true;
+}
+
+/* ---------- рисование поверх видео ---------- */
+function drawWalk() {
+  const g = ctx; g.setTransform(DPR, 0, 0, DPR, 0, 0); g.clearRect(0, 0, SW, SH);
+  const X = WKR.run; if (!X || !X.pose || !S.frozen) return;
+  if (X.t0 != null && R.tNow - X.t0 < 5) { g.save(); g.font = '600 12px system-ui,sans-serif'; g.fillStyle = 'rgba(255,214,102,.95)'; g.textAlign = 'center'; g.fillText('Прогрев позы и дороги… ещё ' + Math.max(0, 5 - (R.tNow - X.t0)).toFixed(0) + ' с — идите ровно, замеры пока ориентировочные', SW / 2, 22); g.restore(); }
+  const aw = R.aw, ah = R.ah, sx = V.w * V.k / aw, sy = V.h * V.k / ah, cam = X.cam, pose = X.pose, eng = X.eng, kp = eng.kap;
+  const map = (x, y) => wkEisPt(V.tx + x * sx, V.ty + y * sy);
+  const gp = (Xl, Zr) => { const p = Wk.project(cam, pose, Xl, pose.Zc + Zr); return p ? map(p[0] * ah + aw / 2, p[1] * ah + ah / 2) : null; };
+  const lo = Math.min(...X.roadX), hi = Math.max(...X.roadX), zA = X.tk.cfg.zMin, zB = X.tk.cfg.zMax;
+  // границы полос
+  g.lineWidth = 1.5; g.strokeStyle = 'rgba(255,171,77,.55)';
+  for (const xb of X.roadX) {
+    g.beginPath(); let on = false;
+    for (let Z = 3; Z <= zB + 6; Z += 2) { const q = gp(xb + kp * Z * Z * 0.5, Z); if (!q) { on = false; continue; } if (!on) { g.moveTo(q[0], q[1]); on = true; } else g.lineTo(q[0], q[1]); }
+    g.stroke();
+  }
+  // ворота через 5 м: C1 — стоят на дороге (проезжаем мимо них), C2 — стоят перед камерой
+  if (S.walk.grid) {
+    const st = X.tk.cfg.gateStep, c1 = S.walk.mode === 'C1';
+    g.lineWidth = 1; g.strokeStyle = 'rgba(61,230,209,.40)'; g.fillStyle = 'rgba(61,230,209,.85)'; g.font = '600 11px system-ui, sans-serif'; g.textAlign = 'left'; g.textBaseline = 'middle';
+    for (let k = Math.ceil((c1 ? pose.Zc + zA : zA) / st); k * st <= (c1 ? pose.Zc + zB : zB); k++) {
+      const Zr = c1 ? k * st - pose.Zc : k * st, xl = lo - 0.5 + kp * Zr * Zr * 0.5, xr = hi + 0.5 + kp * Zr * Zr * 0.5, a = gp(xl, Zr), b = gp(xr, Zr);
+      if (!a || !b) continue;
+      g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke();
+      if (k % 2 === 0) g.fillText(c1 ? String(k * st) : Math.round(Zr) + ' м', b[0] + 4, b[1]);
+    }
+  }
+  // метки скоростей
+  const big = tagBig(Math.min(SW, SH * 1.2)), placed = [], list = [];
+  X.ghosts = X.ghosts.filter(gh => gh.until > R.tNow && gh.until - R.tNow < 5);
+  for (const gh of X.ghosts) list.push({ x: gh.x, y: gh.y, bw: gh.bw, kmh: gh.kmh, dir: gh.dir, lane: gh.lane, id: gh.id, tilde: gh.tilde, fin: true });
+  for (const tr of X.tk.tracks) if (tr.shown && tr.kmh != null && R.tNow - tr.tDet < 1.2) list.push({ x: tr.x, y: tr.y, bw: tr.bw, kmh: tr.kmh, dir: tr.dir, lane: Math.max(1, tr.lane), id: tr.id, tilde: tr.tilde, dbg: S.debug ? 'σ ' + fmt(100 * (tr.fit ? tr.fit.rel : 0), 1) + '% · Z ' + fmt(tr.Zlast, 0) + ' м · ' + tr.P.length + ' т.' : null });
+  list.sort((p, q) => q.y - p.y);
+  for (const it of list) {
+    const d = map(it.x, it.y), tp = map(it.x, it.y - 0.85 * it.bw);
+    drawTag(g, { W: SW, x: d[0], yDot: d[1], yTop: tp[1], kmh: it.kmh, dir: it.dir, lane: it.lane, id: it.id, tilde: it.tilde, fin: it.fin, dbg: it.dbg, kind: tagKind(it.kmh, S.limit), big }, placed);
+  }
+  if (S.debug) {
+    const vp = Wk.vanish(cam, pose); if (vp) { const a = map(0, ah * 0 + vp[1] * ah + ah / 2), b = map(aw, vp[1] * ah + ah / 2); g.strokeStyle = 'rgba(255,80,80,.7)'; g.lineWidth = 1; g.setLineDash([6, 5]); g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke(); g.setLineDash([]); }
+    g.font = '600 12px ui-monospace, Menlo, Consolas, monospace'; g.textAlign = 'left'; g.textBaseline = 'top';
+    const att = X.att, L = ['ψ=' + fmt(wkDeg(pose.psi), 1) + '° θ=' + fmt(wkDeg(pose.th), 1) + '° φ=' + fmt(wkDeg(pose.ph), 1) + '°', 'Xc=' + fmt(pose.Xc, 2) + ' м · уклон ' + fmt(eng.gradePct, 1) + ' % · ψ-доб ' + fmt(wkDeg(eng.psiOff), 1) + '° · κ=' + fmt(1000 * kp, 2) + '/км', 'IMU ' + wkSrcName() + ' ' + fmt(WKS.hz, 0) + ' Гц · шаги ' + fmt(WKS.steps.out.cadence, 2) + '/с · L=' + fmt(X.odo.L, 2) + ' м', 'зрение: ' + eng.vis.n + ' подгонок, q=' + fmt(eng.vis.q, 2) + ' · детектор ' + fmt(VD.ms, 0) + ' мс, ответов ' + X.det.n, 'источники скорости: ' + Object.keys(X.odo.src).map(k => k + ' ' + X.odo.src[k]).join(' · ') + (att ? '' : ' · БЕЗ IMU')];
+    g.fillStyle = 'rgba(0,0,0,.65)'; g.fillRect(6, SH - 112, 470, L.length * 16 + 8); g.fillStyle = '#b8f5c8'; L.forEach((s, i) => g.fillText(s, 10, SH - 108 + i * 16));
+  }
+}
+
+/* ---------- верхняя панель режима ---------- */
+function wkHud() {
+  const row = $('hudWalk'); if (!row) return;
+  const X = WKR.run, on = S.walk.on && S.mode === 'run'; row.hidden = !on;
+  if (!on) return;
+  const odo = X && X.odo, eng = X && X.eng, cam = S.srcKind === 'camera';
+  const set = (id, v, sm, warn) => { const c = $(id); if (!c) return; c.firstElementChild.textContent = v; if (sm != null) c.lastElementChild.textContent = sm; c.classList.toggle('warn', !!warn); };
+  set('chSelf', odo ? fmt(odo.u * 3.6, 1) : '—', 'я, км/ч');
+  set('chDist', odo ? fmt(odo.w - X.w0) : '—', 'пройдено, м');
+  set('chGrade', eng ? (eng.gradePct >= 0 ? '+' : '') + fmt(eng.gradePct, 1) : '—', S.walk.grade ? 'уклон % (ручн.)' : 'уклон %');
+  const road = eng && R.tNow - eng.vis.t < 1.5;
+  set('chRoad', road ? '✓' : '—', 'дорога', S.walk.autoRoad && !road && R.tNow > 3);
+  const stale = cam && WKS.on && X && X.att == null;
+  set('chSens', cam ? (WKS.on ? String(Math.round(WKS.hz)) : '—') : 'файл', cam ? 'Гц датч.' : 'без датч.', cam && (!WKS.on || stale));
+  set('chDet', VD.st === 'ready' ? (VD.ms > 0 ? String(Math.round(VD.ms)) : '…') : '⏳', VD.st === 'ready' ? 'мс детектор' : 'детектор', VD.st === 'fail');
+  const sb = $('btnWkStab'); if (sb) { sb.classList.toggle('on', !!S.walk.stab); sb.textContent = S.walk.stab ? '🎥 Стаб.: вкл' : '🎥 Стаб.: выкл'; sb.hidden = !cam; }
+  const st = $('chStab'); if (st) { st.className = 'chip st-' + (cam && WKS.on && !stale ? 'ok' : 'lost'); st.lastElementChild.textContent = cam ? (WKS.on ? (S.walk.stab ? 'IMU+стаб' : 'IMU') : 'без IMU') : 'без IMU (файл)'; }
+}
+
+/* ---------- журнал для разбора (JSON) ---------- */
+function wkExportLog() {
+  const X = WKR.run || WKR.last; if (!X) { toast('Журнал пуст: сначала запусти замер в режиме «Ходьба».'); return; }
+  const o = {
+    app: 'skorostemer-walk', v: 1, date: new Date().toISOString(), ua: navigator.userAgent, source: S.srcKind, settings: S.walk, limit: S.limit,
+    calib: { cam: X.cam, cal: X.cal, roadX: X.roadX, fit: { f: X.fit.f, th: X.fit.th, H: X.fit.H, s0: X.fit.s0, rmsPct: X.fit.rmsPct }, att0: X.att0 },
+    sensors: { src: wkSrcName(), hz: WKS.hz, ros: WKS.rosN, rosErr: WKS.rosErr, chk: WKS.chk, gpsN: WKS.gpsN, sign: WKS.sign },
+    odo: { L: X.odo.L, src: X.odo.src, w: X.odo.w }, road: { n: X.roadN, vis: X.eng.vis },
+    cols: ['t', 'imu_th°', 'imu_ph°', 'imu_hd°', 'psi°', 'th°', 'ph°', 'Xc', 'u', 'w', 'alpha°', 'psiOff°', 'kappa', 'cadence', 'tracks', 'visQ', 'visU'],
+    frames: X.log, sensorCols: ['t', 'wx', 'wy', 'wz', 'ax', 'ay', 'az'], sensorRaw: X.sLog, passes: X.passLog, drops: X.tk.drops || []
+  };
+  try {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(o)], { type: 'application/json' }));
+    const a = el('a', { href: url, download: 'hodba-log-' + Date.now() + '.json' });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 8000);
+  } catch (e) { toast('Не удалось сохранить файл на этом устройстве.'); }
+}
+/* ==== WALK:RUN:END ==== */
+
+/* ==== WALK:UI:BEGIN ====
+ * Режим «Ходьба», часть 6в: интерфейс — выбор режима, настройки ходьбы, кнопка стабилизации в камере, панель в замере, проверка калибровки.
+ */
+const WK_CSS = '#wkBar{position:absolute;right:8px;top:8px;z-index:6}.wkb{min-height:40px;padding:6px 12px;border-radius:12px;background:rgba(10,12,15,.78);border:1px solid rgba(255,255,255,.22);color:#dfe6ee;font-weight:700;font-size:13px;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}.wkb.on{border-color:var(--ok);color:var(--ok)}' +
+  '#hudWalk{flex-basis:100%}.chip.btn.on{border-color:var(--ok);color:var(--ok)}.wkrng{width:100%}.wksub{font-size:12px;color:var(--mut);margin:0}.wkcard .fi input{width:100%}';
+function wkSensText() {
+  if (!WKS.on) return 'Датчики выключены.';
+  const st = WKS.steps.out, att = WKS.tA ? wkAtt(WKS.tA) : null, L = [];
+  L.push(fmt(WKS.hz, 0) + ' Гц · ориентация: ' + wkSrcName() + (WKS.rosErr && !WKS.useRos ? ' (готовый: ' + WKS.rosErr + ')' : '') + (WKS.dmN === 0 ? ' · данных нет!' : ''));
+  if (att) L.push('наклон камеры ' + fmt(wkDeg(att.th), 1) + '° (+вниз) · крен ' + fmt(wkDeg(att.ph), 1) + '°');
+  L.push('шаги: ' + (st.walking ? fmt(st.cadence, 2) + ' /с' : (st.stationary ? 'стою' : '—')) + ' · GPS: ' + (!S.walk.gps ? 'выкл' : (WKS.gps ? (WKS.gps.speed != null ? fmt(WKS.gps.speed * 3.6, 1) + ' км/ч' : 'без скорости') : '—')));
+  return L.join('\n');
+}
+let wkTimer = 0;
+function wkStatusLoop(node) {
+  clearInterval(wkTimer);
+  wkTimer = setInterval(() => { if (!node.isConnected) { clearInterval(wkTimer); return; } node.textContent = wkSensText(); }, 500);
+}
+function wkNumRow(label, value, min, max, onSet, unit) {
+  return numField(label, value, (v, inp) => { if (isFinite(v) && v >= min && v <= max) { onSet(v); inp.style.outline = ''; } else inp.style.outline = '1px solid var(--bad)'; }, unit);
+}
+// шаг 1 мастера: выбор режима и его настройки
+function wkSourceCard(box) {
+  const W = S.walk, card = el('div', { class: 'card wkcard' }, el('div', { class: 'ct', text: 'Режим замера' }));
+  card.append(seg(['На штативе', 'Ходьба'], W.on ? 1 : 0, i => {
+    W.on = i === 1;
+    if (W.on) { S.viol.on = false; wkSensStart().then(() => { wkEisSync(); }); }
+    wkEisSync(); renderStep(true);
+  }));
+  if (!W.on) {
+    card.append(el('p', { class: 'wksub', text: 'Штатив: телефон стоит неподвижно (как раньше). Ходьба: телефон в руках, идёшь вдоль дороги — скорость машин считается по датчикам телефона, шагам и картинке.' }));
+    box.append(card); return;
+  }
+  card.append(el('p', { class: 'wksub', text: 'Телефон в руках, камера смотрит вдоль дороги, экран в горизонтальном положении. Заморозь кадр стоя на месте (шаги 2–4), потом «Старт» и иди вдоль дороги ровным шагом, держа телефон на той же высоте.' }));
+  card.append(wkNumRow('Высота телефона над землёй', W.H, 0.8, 2.2, v => { W.H = v; wkSave(); }, 'м'));
+  card.append(wkNumRow('Расстояние от тебя до края дороги (с тротуара)', W.curb, 0, 20, v => { W.curb = v; wkSave(); }, 'м'));
+  card.append(wkNumRow('Длина шага (потом уточняется на ходу)', W.stride, 0.4, 1.1, v => { W.stride = v; wkSave(); }, 'м'));
+  card.append(el('div', { class: 'ct', text: 'Ворота для скорости машин' }));
+  card.append(seg(['C1 · на дороге', 'C2 · у камеры'], W.mode === 'C1' ? 0 : 1, i => { W.mode = i === 0 ? 'C1' : 'C2'; wkSave(); renderStep(true); }));
+  card.append(el('p', { class: 'wksub', text: W.mode === 'C1' ? 'C1: ворота стоят на дороге через каждые 5 м, мимо них едет и машина, и ты. Скорость машины — относительно дороги. Основной вариант.' : 'C2: ворота «привязаны» к камере (5 м, 10 м…), скорость = относительная + твоя. Запасной вариант, если C1 даёт разброс.' }));
+  card.append(
+    switchRow('Стабилизация картинки', 'по гироскопу: меньше дрожит видео и метки (края чуть обрезаются)', W.stab, v => { if (v !== W.stab) wkToggleStab(); }),
+    switchRow('Подгонка по линиям дороги', 'слабо поправляет поворот, уклон и положение по разметке', W.autoRoad, v => { W.autoRoad = v; wkSave(); }),
+    switchRow('GPS: скорость ходьбы', 'дополняет шаги и картинку; нужен вид на небо', W.gps, v => { W.gps = v; wkSave(); }));
+  const sens = el('div', { class: 'status', style: 'white-space:pre-line', text: wkSensText() });
+  card.append(sens, el('button', { class: 'btn small', type: 'button', onclick: async () => { const ok = await wkSensStart(); if (ok) { wkRosStart(); toast('Датчики включены.', 1800); } } }, WKS.on ? '↻ Перезапустить датчики' : 'Включить датчики'));
+  if (S.srcKind === 'file') card.append(el('div', { class: 'status warn', text: 'Видеофайл: датчиков телефона нет. Тряска не компенсируется — для проверки лучше снимать на камеру с включёнными датчиками.' }));
+  box.append(card);
+  wkStatusLoop(sens);
+}
+// шаг «Проверка»: что получилось из ворот и линий полос
+function wkCheckCard(st) {
+  let C; try { C = wkCalibrate(); } catch (e) { st.className = 'status bad'; st.append(el('div', { text: 'Калибровка: ' + (e && e.message ? e.message : e) })); return; }
+  if (!C.ok) { st.className = 'status bad'; st.append(el('div', { text: C.msg })); return; }
+  const f = C.fit, lo = Math.min(...C.roadX), hi = Math.max(...C.roadX);
+  st.append(el('div', { text: 'Камера: фокус ' + fmt(f.f, 2) + ' (угол по ширине ≈ ' + fmt(f.fovDeg, 0) + '°), наклон вниз ' + fmt(wkDeg(f.th), 1) + '°, высота ' + fmt(f.H, 2) + ' м. Невязка ворот ' + fmt(f.rmsPct, 1) + ' %.' }));
+  st.append(el('div', { text: 'Дорога: ширина по границам ' + fmt(hi - lo, 1) + ' м, камера смотрит под ' + fmt(wkDeg(C.cal.psi), 1) + '° к дороге, ближние ворота в ' + fmt(f.s0, 1) + ' м от тебя.' }));
+  st.append(el('div', { text: 'Датчики: ' + (WKS.on ? 'включены, ' + wkSrcName() : 'ВЫКЛЮЧЕНЫ (включи на шаге 1)') + '; ориентация при заморозке ' + (WKR.att0 ? 'записана ✓' : 'не записана — держи телефон при старте так же, как при заморозке') + '.' }));
+  const near = C.roadX.reduce((m, x) => Math.abs(x) < Math.abs(m) ? x : m, C.roadX[0]), curb = S.walk.curb;
+  st.append(el('div', { text: 'Ближняя граница дороги по калибровке: ' + fmt(Math.abs(near), 1) + ' м ' + (near >= 0 ? 'справа' : 'слева') + ' от тебя (ты указал ≈ ' + fmt(curb, 1) + ' м).' }));
+  if (Math.abs(Math.abs(near) - curb) > Math.max(0.8, 0.6 * curb)) C.msg.push('Расстояние до края дороги по калибровке (' + fmt(Math.abs(near), 1) + ' м) заметно отличается от указанного (' + fmt(curb, 1) + ' м): проверь границы полос и высоту телефона над землёй.');
+  const a0 = WKR.att0 && (WKS.useRos ? WKR.att0.R || WKR.att0.F : WKR.att0.F || WKR.att0.R);
+  if (a0 && S.srcKind === 'camera') {
+    const d = wkDeg(a0.th - C.cal.th);
+    st.append(el('div', { text: 'Наклон камеры вниз: по датчику ' + fmt(wkDeg(a0.th), 1) + '°, по воротам ' + fmt(wkDeg(C.cal.th), 1) + '° (разница ' + fmt(d, 1) + '° — это уклон дороги плюс погрешность датчика).' }));
+    if (Math.abs(d) > 6) C.msg.push('Наклон по датчику и по воротам расходится на ' + fmt(Math.abs(d), 0) + '°. Либо дорога здесь идёт в горку/под горку, либо датчики дают неверные знаки — проверь на шаге 1: «наклон камеры» должен расти, когда опускаешь телефон вниз.');
+  }
+  for (const w of C.msg) st.append(el('div', { class: 'badtxt', text: '⚠ ' + w }));
+  if (C.msg.length) st.className = 'status warn';
+  st.append(el('div', { text: 'Рабочая зона: машины на расстоянии ≈ 5–45 м; точнее всего 10–35 м. Перед стартом убедись, что телефон на той же высоте, а дорога впереди без резких горок.' }));
+}
+// настройки ходьбы прямо в замере: уклон, кривизна, стабилизация, сбросы
+function wkRunSheet() {
+  const W = S.walk, X = WKR.run, c = el('div', { class: 'sets wkcard' });
+  const rng = (label, val, min, max, step, fmtv, onIn) => {
+    const out = el('b', { text: fmtv(val) }), inp = el('input', { type: 'range', class: 'wkrng', min, max, step, value: val });
+    inp.addEventListener('input', () => { const v = parseFloat(inp.value); out.textContent = fmtv(v); onIn(v); });
+    return el('div', { class: 'card' }, el('div', { class: 'row between' }, el('span', { class: 'ct', text: label }), out), inp);
+  };
+  c.append(rng('Уклон дороги (ручная поправка)', W.grade, -12, 12, 0.5, v => (v > 0 ? '+' : '') + fmt(v, 1) + ' %', v => { W.grade = v; }));
+  c.append(el('p', { class: 'wksub', text: 'Плюс — дорога впереди идёт в горку. 0 — только автоподгонка по линиям. Ошибка в уклоне в 1° даёт ≈ 10–25 % ошибки скорости на 20 м, поэтому на горке/спуске лучше подкрутить вручную.' }));
+  c.append(rng('Кривизна дороги (ручная)', Math.round(W.curv * 1000), -30, 30, 1, v => (v === 0 ? 'прямая' : (v > 0 ? 'вправо' : 'влево') + ' · R ≈ ' + Math.round(1000 / Math.abs(v)) + ' м'), v => { W.curv = v / 1000; }));
+  c.append(el('div', { class: 'card' }, el('div', { class: 'ct', text: 'Ворота' }), seg(['C1 · на дороге', 'C2 · у камеры'], W.mode === 'C1' ? 0 : 1, i => {
+    W.mode = i === 0 ? 'C1' : 'C2'; wkSave(); if (X) { wkFlush(); X.tk.cfg.mode = W.mode; } closeSheet(); toast('Режим ворот: ' + W.mode, 1800);
+  })));
+  c.append(
+    switchRow('Стабилизация картинки', 'EIS по гироскопу', W.stab, v => { if (v !== W.stab) wkToggleStab(); }),
+    switchRow('Сетка ворот 5 м', 'бирюзовые линии на дороге', W.grid, v => { W.grid = v; wkSave(); redraw(); }),
+    switchRow('Подгонка по линиям дороги', 'авто-поправка позы камеры', W.autoRoad, v => { W.autoRoad = v; wkSave(); }));
+  c.append(el('div', { class: 'card' }, el('div', { class: 'ct', text: 'Сила стабилизации' }), seg(['слабая', 'средняя', 'сильная'], W.zoom < 1.08 ? 0 : (W.zoom > 1.12 ? 2 : 1), i => { W.zoom = [1.06, 1.10, 1.15][i]; W.tau = [0.3, 0.45, 0.8][i]; wkSave(); closeSheet(); })));
+  c.append(wkNumRow('Задержка датчиков относительно кадра', W.imuDelay, -150, 300, v => { W.imuDelay = v; wkSave(); }, 'мс'));
+  c.append(el('p', { class: 'wksub', text: 'Если метки и разметка «плывут» вслед за тряской с запозданием — подбери задержку: сначала +30…+60 мс, затем −30…−60.' }));
+  const acts = el('div', { class: 'col' });
+  acts.append(
+    el('button', { class: 'btn', type: 'button', onclick: () => { if (X) { X.w0 = X.odo.w; wkHud(); } closeSheet(); } }, '⟲ Обнулить «Пройдено»'),
+    el('button', { class: 'btn', type: 'button', onclick: () => { if (X) { const e = X.eng; e.alpha = 0; e.psiOff = 0; e.Xc = 0; e.kappa = 0; W.grade = 0; W.curv = 0; wkFlush(); } closeSheet(); toast('Поправки позы сброшены.', 1800); } }, '↺ Сбросить поправки позы'),
+    el('button', { class: 'btn', type: 'button', onclick: wkExportLog }, '⬇ Журнал ходьбы (JSON)'));
+  c.append(acts);
+  openSheet('Ходьба', c);
+}
+function wkSettingsActs(acts) {
+  if (S.walk.on && S.mode === 'run') acts.append(el('button', { class: 'btn', type: 'button', onclick: () => { closeSheet(); wkRunSheet(); } }, '🚶 Настройки ходьбы'));
+  if (WKR.run || WKR.last) acts.append(el('button', { class: 'btn', type: 'button', onclick: wkExportLog }, '⬇ Журнал ходьбы (JSON)'));
+}
+function wkInitUi() {
+  const st = document.createElement('style'); st.textContent = WK_CSS; document.head.append(st);
+  stage.append(el('div', { id: 'wkBar', hidden: true }, el('button', { id: 'wkStabBtn', class: 'wkb', type: 'button', onclick: wkToggleStab }, el('span', { text: 'Стабилизация: выкл' }))));
+  const chip = (id, v, s, btn) => el(btn ? 'button' : 'div', { class: 'chip' + (btn ? ' btn' : ''), id, type: btn ? 'button' : null }, el('b', { text: v }), el('small', { text: s }));
+  const row = el('div', { class: 'hrow', id: 'hudWalk', hidden: true },
+    chip('chSelf', '—', 'я, км/ч'), chip('chDist', '—', 'пройдено, м'), chip('chGrade', '—', 'уклон %', true), chip('chRoad', '—', 'дорога'), chip('chSens', '—', 'Гц датч.'), chip('chDet', '—', 'детектор'),
+    el('button', { class: 'chip btn', id: 'btnWkStab', type: 'button' }, '🎥 Стаб.: выкл'), el('button', { class: 'chip btn', id: 'btnWkMenu', type: 'button', 'aria-label': 'Настройки ходьбы' }, '🚶'));
+  $('hud').firstElementChild.after(row);
+  $('chGrade').addEventListener('click', wkRunSheet); $('btnWkMenu').addEventListener('click', wkRunSheet); $('btnWkStab').addEventListener('click', wkToggleStab);
+  wkEisSync();
+}
+wkInitUi();
+/* ==== WALK:UI:END ==== */
+
 
 /* =====================  Запуск приложения  ===================== */
 function init() {
