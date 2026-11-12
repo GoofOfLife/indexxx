@@ -5078,13 +5078,20 @@ function wkOnFreeze() {
 
 /* ---------- GPS ---------- */
 function wkGpsStart() {
-  if (WKS.gpsId || !navigator.geolocation || !S.walk.gps) return;
+  if (WKS.gpsId || !S.walk.gps) return;
+  if (!navigator.geolocation) { WKS.gpsErr = 'нет в браузере'; return; }
+  if (window.isSecureContext === false) { WKS.gpsErr = 'нужен https'; return; }
+  WKS.gpsErr = ''; WKS.gpsN = 0;
   try {
     WKS.gpsId = navigator.geolocation.watchPosition(p => {
-      const c = p.coords; WKS.gpsN++; WKS.gps = { t: performance.now() / 1000, speed: c.speed, acc: c.accuracy };
+      const c = p.coords; WKS.gpsN++; WKS.gpsErr = ''; WKS.gps = { t: performance.now() / 1000, speed: c.speed, acc: c.accuracy };
       const X = WKR.run; if (X && c.speed != null && isFinite(c.speed)) X.gpsNew = { speed: c.speed, acc: c.accuracy };
-    }, e => { WKS.gpsErr = e && e.code ? String(e.code) : 'ошибка'; }, { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
-  } catch (_) { WKS.gpsId = 0; }
+    }, e => {
+      const c = e && e.code;
+      WKS.gpsErr = c === 1 ? 'запрещён: Chrome → ⋮ → Настройки → Настройки сайтов → Геолокация → разреши для этого сайта; и включи геолокацию телефона' : c === 2 ? 'нет сигнала (выйди на открытое место, включи «Точное местоположение»)' : c === 3 ? 'ждём спутники…' : 'ошибка';
+      if (c === 1) { try { navigator.geolocation.clearWatch(WKS.gpsId); } catch (_) {} WKS.gpsId = 0; }
+    }, { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 });
+  } catch (_) { WKS.gpsId = 0; WKS.gpsErr = 'ошибка запуска'; }
 }
 function wkGpsStop() { try { if (WKS.gpsId) navigator.geolocation.clearWatch(WKS.gpsId); } catch (_) {} WKS.gpsId = 0; WKS.gps = null; }
 
@@ -5472,7 +5479,7 @@ function wkSensText() {
   const st = WKS.steps.out, att = WKS.tA ? wkAtt(WKS.tA) : null, L = [];
   L.push(fmt(WKS.hz, 0) + ' Гц · ориентация: ' + wkSrcName() + (WKS.rosErr && !WKS.useRos ? ' (готовый: ' + WKS.rosErr + ')' : '') + (WKS.dmN === 0 ? ' · данных нет!' : ''));
   if (att) L.push('наклон камеры ' + fmt(wkDeg(att.th), 1) + '° (+вниз) · крен ' + fmt(wkDeg(att.ph), 1) + '°');
-  L.push('шаги: ' + (st.walking ? fmt(st.cadence, 2) + ' /с' : (st.stationary ? 'стою' : '—')) + ' · GPS: ' + (!S.walk.gps ? 'выкл' : (WKS.gps ? (WKS.gps.speed != null ? fmt(WKS.gps.speed * 3.6, 1) + ' км/ч' : 'без скорости') : '—')));
+  L.push('шаги: ' + (st.walking ? fmt(st.cadence, 2) + ' /с' : (st.stationary ? 'стою' : '—')) + ' · GPS: ' + (!S.walk.gps ? 'выкл' : (WKS.gps ? (WKS.gps.speed != null ? fmt(WKS.gps.speed * 3.6, 1) + ' км/ч' : 'без скорости (стоишь?)') + ', точность ±' + fmt(WKS.gps.acc, 0) + ' м' : (WKS.gpsErr || (WKS.gpsId ? 'ищу сигнал…' : 'не запущен')))));
   return L.join('\n');
 }
 let wkTimer = 0;
@@ -5488,7 +5495,7 @@ function wkSourceCard(box) {
   const W = S.walk, card = el('div', { class: 'card wkcard' }, el('div', { class: 'ct', text: 'Режим замера' }));
   card.append(seg(['На штативе', 'Ходьба'], W.on ? 1 : 0, i => {
     W.on = i === 1;
-    if (W.on) { S.viol.on = false; wkSensStart().then(() => { wkEisSync(); }); }
+    if (W.on) { S.viol.on = false; wkGpsStart(); wkSensStart().then(() => { wkEisSync(); }); }
     wkEisSync(); renderStep(true);
   }));
   if (!W.on) {
@@ -5505,7 +5512,7 @@ function wkSourceCard(box) {
   card.append(
     switchRow('Стабилизация картинки', 'по гироскопу: меньше дрожит видео и метки (края чуть обрезаются)', W.stab, v => { if (v !== W.stab) wkToggleStab(); }),
     switchRow('Подгонка по линиям дороги', 'слабо поправляет поворот, уклон и положение по разметке', W.autoRoad, v => { W.autoRoad = v; wkSave(); }),
-    switchRow('GPS: скорость ходьбы', 'дополняет шаги и картинку; нужен вид на небо', W.gps, v => { W.gps = v; wkSave(); }));
+    switchRow('GPS: скорость ходьбы', 'дополняет шаги и картинку; нужен вид на небо', W.gps, v => { W.gps = v; wkSave(); if (v) wkGpsStart(); else wkGpsStop(); }));
   const sens = el('div', { class: 'status', style: 'white-space:pre-line', text: wkSensText() });
   card.append(sens, el('button', { class: 'btn small', type: 'button', onclick: async () => { const ok = await wkSensStart(); if (ok) { wkRosStart(); toast('Датчики включены.', 1800); } } }, WKS.on ? '↻ Перезапустить датчики' : 'Включить датчики'));
   if (S.srcKind === 'file') card.append(el('div', { class: 'status warn', text: 'Видеофайл: датчиков телефона нет. Тряска не компенсируется — для проверки лучше снимать на камеру с включёнными датчиками.' }));
