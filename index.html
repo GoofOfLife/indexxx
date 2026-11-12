@@ -2524,6 +2524,7 @@ function buildSource(box) {
   if (S.srcKind === 'file') box.append(fileControls());
   wkCamCard(box);
   wkSourceCard(box);
+  wkStreetCard(box);
   buildProfileCard(box);
 }
 $('fileIn').addEventListener('change', async e => {
@@ -5084,7 +5085,7 @@ function wkGpsStart() {
   WKS.gpsErr = ''; WKS.gpsN = 0;
   try {
     WKS.gpsId = navigator.geolocation.watchPosition(p => {
-      const c = p.coords; WKS.gpsN++; WKS.gpsErr = ''; WKS.gps = { t: performance.now() / 1000, speed: c.speed, acc: c.accuracy };
+      const c = p.coords; WKS.gpsN++; WKS.gpsErr = ''; WKS.gps = { t: performance.now() / 1000, speed: c.speed, acc: c.accuracy, lat: c.latitude, lon: c.longitude };
       const X = WKR.run; if (X && c.speed != null && isFinite(c.speed)) X.gpsNew = { speed: c.speed, acc: c.accuracy };
     }, e => {
       const c = e && e.code;
@@ -5177,11 +5178,11 @@ function wkCalibrate() {
 }
 
 async function startWalk() {
-  recalc();
-  const A = calsOk(); if (!A.ok) { toast(A.msg); return; }
+  const ST = WKR.street; WKR.street = null;   // запуск по сохранённой дороге: калибровка и опорная ориентация берутся из памяти
+  if (!ST) { recalc(); const A = calsOk(); if (!A.ok) { toast(A.msg); return; } }
   const btn = $('btnNext'); btn.disabled = true;
   try {
-    const W = S.walk, C = wkCalibrate();
+    const W = S.walk, C = ST ? ST.C : wkCalibrate();
     if (!C.ok) { toast(C.msg, 5000); btn.disabled = false; return; }
     if (S.srcKind === 'camera' && !WKS.on) await wkSensStart();
     // детектор: в режиме «Ходьба» основной — YOLOv8n (в ⚙ можно вернуть MediaPipe)
@@ -5204,7 +5205,8 @@ async function startWalk() {
     const ax = ac.getContext('2d', { willReadFrequently: true }); ax.imageSmoothingEnabled = true; ax.imageSmoothingQuality = CONFIG.smoothing;
     // ориентация телефона в момент заморозки кадра — опорная; нет её — берём текущую
     let att0 = null;
-    if (S.srcKind === 'camera' && WKS.on) {
+    if (ST && S.srcKind === 'camera' && WKS.on) { const an = wkAtt(performance.now() / 1000); att0 = { th: ST.att0.th, ph: ST.att0.ph, hd: an ? an.hd : 0 }; }
+    else if (S.srcKind === 'camera' && WKS.on) {
       const a0 = WKR.att0 && (WKS.useRos ? WKR.att0.R || WKR.att0.F : WKR.att0.F || WKR.att0.R);
       att0 = a0 || wkAtt(performance.now() / 1000);
       if (!a0) toast('Ориентация при заморозке кадра не записана — держи телефон так же, как при калибровке.', 5000);
@@ -5219,6 +5221,7 @@ async function startWalk() {
       log: [], sLog: [], passLog: [], pos: new Map(), ghosts: [], t0: null, att0,
       det: { rq: null, last: 0, iv: 120, n: 0, lag: 0, fail: 0 }, info: C.msg
     };
+    if (ST) { X.streetName = ST.name; if (ST.poly) X.st = new WkStreet.Tracker(ST.poly, { dir: ST.dir, s0: ST.sCal, gCal: ST.gCal }); }
     X.tk.setRoad({ X: C.roadX });
     Object.assign(R, {
       aw, ah, ax, gray: X.gA, geo: null, vdCrop: null, stab: null, stabOn: false, dyH: [], det: null, trk: null, p: [0, 0, 0], prevP: null, gate: null, stabState: 'off',
@@ -5275,7 +5278,8 @@ function processFrameWalk(now, md) {
     else if (st.stationary && t - X.tStep > 0.3) { odo.zupt(t); X.tStep = t; }
   }
   // поза камеры
-  eng.alphaManual = Math.atan(W.grade / 100); eng.kappaManual = W.curv; eng.yawSign = W.yawSign; eng.psiManual = W.psiTrim * Wk.D2R; eng.autoRoad = W.autoRoad;
+  eng.alphaManual = Math.atan(W.grade / 100); eng.kappaManual = W.curv; eng.yawSign = W.yawSign; eng.psiManual = W.psiTrim * Wk.D2R;
+  if (X.st) wkStreetUpdate(X, t); eng.autoRoad = W.autoRoad;
   const att = cam && WKS.on ? wkAtt(t - lat + W.imuDelay / 1000) : null; X.att = att;
   const pose = eng.pose(att, odo.w); pose.ax = Wk.axes(pose.psi, pose.th, pose.ph);
   const excl = (x, y) => { for (const c of tk.tracks) if (x > c.x - 0.7 * c.bw && x < c.x + 0.7 * c.bw && y > c.y - 1.1 * c.bh && y < c.y + 8) return true; return false; };
@@ -5445,6 +5449,7 @@ function wkHud() {
   set('chGrade', eng ? (eng.gradePct >= 0 ? '+' : '') + fmt(eng.gradePct, 1) : '—', S.walk.grade ? 'уклон % (ручн.)' : 'уклон %');
   const road = eng && R.tNow - eng.vis.t < 1.5;
   set('chRoad', road ? '✓' : '—', 'дорога', S.walk.autoRoad && !road && R.tNow > 3);
+  { const c = $('chStr'); if (c) { c.hidden = !(X && X.st); if (X && X.st) set('chStr', fmt(X.st.s, 0) + ' м', X.st.nFix ? 'по улице · GPS' : 'по улице · счёт'); } }
   const stale = cam && WKS.on && X && X.att == null;
   set('chSens', cam ? (WKS.on ? String(Math.round(WKS.hz)) : '—') : 'файл', cam ? 'Гц датч.' : 'без датч.', cam && (!WKS.on || stale));
   set('chDet', VD.st === 'ready' ? (VD.ms > 0 ? String(Math.round(VD.ms)) : '…') : '⏳', VD.st === 'ready' ? 'мс детектор' : 'детектор', VD.st === 'fail');
@@ -5483,7 +5488,7 @@ function wkAlign() {
 /* ==== WALK:UI:BEGIN ====
  * Режим «Ходьба», часть 6в: интерфейс — выбор режима, настройки ходьбы, кнопка стабилизации в камере, панель в замере, проверка калибровки.
  */
-const WK_CSS = '#wkBar{position:absolute;right:8px;top:8px;z-index:6}.wkb{min-height:40px;padding:6px 12px;border-radius:12px;background:rgba(10,12,15,.78);border:1px solid rgba(255,255,255,.22);color:#dfe6ee;font-weight:700;font-size:13px;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}.wkb.on{border-color:var(--ok);color:var(--ok)}' +
+const WK_CSS = 'textarea.wkta{width:100%;min-height:96px;border-radius:12px;border:1px solid var(--line);background:#0e1216;color:var(--tx);padding:8px 12px;font:13px/1.4 ui-monospace,monospace;resize:vertical}#wkBar{position:absolute;right:8px;top:8px;z-index:6}.wkb{min-height:40px;padding:6px 12px;border-radius:12px;background:rgba(10,12,15,.78);border:1px solid rgba(255,255,255,.22);color:#dfe6ee;font-weight:700;font-size:13px;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}.wkb.on{border-color:var(--ok);color:var(--ok)}' +
   '#hudWalk{flex-basis:100%}.chip.btn.on{border-color:var(--ok);color:var(--ok)}.wkrng{width:100%}.wksub{font-size:12px;color:var(--mut);margin:0}.wkcard .fi input{width:100%}';
 function wkSensText() {
   if (!WKS.on) return 'Датчики выключены.';
@@ -5535,7 +5540,7 @@ function wkSourceCard(box) {
 function wkCheckCard(st) {
   let C; try { C = wkCalibrate(); } catch (e) { st.className = 'status bad'; st.append(el('div', { text: 'Калибровка: ' + (e && e.message ? e.message : e) })); return; }
   if (!C.ok) { st.className = 'status bad'; st.append(el('div', { text: C.msg })); return; }
-  const f = C.fit, lo = Math.min(...C.roadX), hi = Math.max(...C.roadX);
+  const f = C.fit, lo = Math.min(...C.roadX), hi = Math.max(...C.roadX), nm = el('input', { type: 'text', placeholder: 'Название дороги', value: S.place || '' });
   st.append(el('div', { text: 'Камера: фокус ' + fmt(f.f, 2) + ' (угол по ширине ≈ ' + fmt(f.fovDeg, 0) + '°), наклон вниз ' + fmt(wkDeg(f.th), 1) + '°, высота ' + fmt(f.H, 2) + ' м. Невязка ворот ' + fmt(f.rmsPct, 1) + ' %.' }));
   st.append(el('div', { text: 'Дорога: ширина по границам ' + fmt(hi - lo, 1) + ' м, камера смотрит под ' + fmt(wkDeg(C.cal.psi), 1) + '° к дороге, ближние ворота в ' + fmt(f.s0, 1) + ' м от тебя.' }));
   st.append(el('div', { text: 'Датчики: ' + (WKS.on ? 'включены, ' + wkSrcName() : 'ВЫКЛЮЧЕНЫ (включи на шаге 1)') + '; ориентация при заморозке ' + (WKR.att0 ? 'записана ✓' : 'не записана — держи телефон при старте так же, как при заморозке') + '.' }));
@@ -5550,6 +5555,7 @@ function wkCheckCard(st) {
   }
   for (const w of C.msg) st.append(el('div', { class: 'badtxt', text: '⚠ ' + w }));
   if (C.msg.length) st.className = 'status warn';
+  st.append(el('div', { class: 'row', style: 'margin-top:8px' }, nm, el('button', { class: 'btn small', type: 'button', onclick: () => { if (wkStreetSave(nm.value, C)) renderStep(true); } }, '💾 Запомнить дорогу')));
   st.append(el('div', { text: 'Рабочая зона: машины на расстоянии ≈ 5–45 м; точнее всего 10–35 м. Перед стартом убедись, что телефон на той же высоте, а дорога впереди без резких горок.' }));
 }
 // настройки ходьбы прямо в замере: уклон, кривизна, стабилизация, сбросы
@@ -5584,6 +5590,33 @@ function wkRunSheet() {
   c.append(acts);
   openSheet('Ходьба', c);
 }
+
+// «Память дороги» на шаге 1: координаты дороги и сохранённые дороги
+function wkStreetCard(box) {
+  const all = wkStreetsGet(), names = Object.keys(all).sort();
+  const card = el('div', { class: 'card wkcard' }, el('div', { class: 'ct', text: 'Память дороги' }));
+  card.append(el('div', { class: 'wksub', text: 'Координаты дороги (необязательно): по одной точке на строку «широта, долгота» (можно третьим числом высота, м). В Google Картах: долгое нажатие на дорогу → координаты вверху → копировать. Нужно 2–10 точек вдоль улицы, точки по ходу дороги.' }));
+  const ta = el('textarea', { class: 'wkta', rows: 5, placeholder: '56.94960, 24.10520\n56.95010, 24.10710\n56.95100, 24.10980' }); ta.value = WKT.text;
+  const info = el('div', { class: 'status', text: WKT.poly ? wkStreetApplyText(WKT.text).text : 'Координаты не заданы: кривизну и уклон задаёшь вручную в настройках замера.' });
+  const apply = () => { const r = wkStreetApplyText(ta.value); info.textContent = ta.value.trim() ? r.text : 'Координаты не заданы: кривизну и уклон задаёшь вручную в настройках замера.'; info.className = 'status' + (ta.value.trim() ? (r.ok ? ' ok' : ' warn') : ''); };
+  ta.addEventListener('change', apply); ta.addEventListener('blur', apply);
+  card.append(ta, info,
+    el('div', { class: 'wksub', text: 'В какую сторону идёшь относительно списка точек:' }),
+    seg(['к концу списка', 'к началу списка'], WKT.dirCal === -1 ? 1 : 0, i => { WKT.dirCal = i === 1 ? -1 : 1; }));
+  card.append(el('div', { class: 'wksub', text: 'Сохранённые дороги (калибровка + координаты). Сохранить новую можно на шаге «Проверка» кнопкой «Запомнить дорогу».' }));
+  const sel = el('select', { 'aria-label': 'Сохранённая дорога' }, el('option', { value: '', text: names.length ? 'Выбери дорогу…' : 'Сохранённых дорог пока нет' }), names.map(n => el('option', { value: n, text: n + (all[n].ptsText ? ' · с координатами' : '') })));
+  const need = () => { if (!sel.value) { toast('Сначала выбери дорогу в списке.'); return false; } return true; };
+  const fileIn = el('input', { type: 'file', accept: '.json,application/json', hidden: true }); fileIn.addEventListener('change', () => { const f = fileIn.files && fileIn.files[0]; if (f) wkStreetImport(f); fileIn.value = ''; });
+  card.append(sel,
+    el('button', { class: 'btn primary', type: 'button', onclick: () => { if (need()) wkStartStreet(sel.value); } }, '▶ Старт по сохранённой дороге'),
+    el('div', { class: 'row' },
+      el('button', { class: 'btn small', type: 'button', onclick: () => { if (!need()) return; const b = all[sel.value]; ta.value = b.ptsText || ''; WKT.dirCal = b.dirCal === -1 ? -1 : 1; apply(); renderStep(true); } }, 'Показать координаты'),
+      el('button', { class: 'btn small', type: 'button', onclick: () => { if (need()) wkStreetExport(sel.value); } }, '⬇ В файл'),
+      el('button', { class: 'btn small', type: 'button', onclick: () => fileIn.click() }, '⬆ Из файла'),
+      el('button', { class: 'btn small danger', type: 'button', onclick: () => { if (need() && confirm('Удалить дорогу «' + sel.value + '»?')) { wkStreetDelete(sel.value); renderStep(true); } } }, 'Удалить')),
+    fileIn);
+  box.append(card);
+}
 function wkSettingsActs(acts) {
   if (S.walk.on && S.mode === 'run') acts.append(el('button', { class: 'btn', type: 'button', onclick: () => { closeSheet(); wkRunSheet(); } }, '🚶 Настройки ходьбы'));
   if (WKR.run || WKR.last) acts.append(el('button', { class: 'btn', type: 'button', onclick: wkExportLog }, '⬇ Журнал ходьбы (JSON)'));
@@ -5593,7 +5626,7 @@ function wkInitUi() {
   stage.append(el('div', { id: 'wkBar', hidden: true }, el('button', { id: 'wkStabBtn', class: 'wkb', type: 'button', onclick: wkToggleStab }, el('span', { text: 'Стабилизация: выкл' }))));
   const chip = (id, v, s, btn) => el(btn ? 'button' : 'div', { class: 'chip' + (btn ? ' btn' : ''), id, type: btn ? 'button' : null }, el('b', { text: v }), el('small', { text: s }));
   const row = el('div', { class: 'hrow', id: 'hudWalk', hidden: true },
-    chip('chSelf', '—', 'я, км/ч'), chip('chDist', '—', 'пройдено, м'), chip('chGrade', '—', 'уклон %', true), chip('chRoad', '—', 'дорога', true), chip('chSens', '—', 'Гц датч.'), chip('chDet', '—', 'детектор'),
+    chip('chSelf', '—', 'я, км/ч'), chip('chDist', '—', 'пройдено, м'), chip('chGrade', '—', 'уклон %', true), chip('chRoad', '—', 'дорога', true), chip('chStr', '—', 'по улице'), chip('chSens', '—', 'Гц датч.'), chip('chDet', '—', 'детектор'),
     el('button', { class: 'chip btn', id: 'btnWkStab', type: 'button' }, '🎥 Стаб.: выкл'), el('button', { class: 'chip btn', id: 'btnWkMenu', type: 'button', 'aria-label': 'Настройки ходьбы' }, '🚶'));
   $('hud').firstElementChild.after(row);
   $('chGrade').addEventListener('click', wkRunSheet); $('btnWkMenu').addEventListener('click', wkRunSheet); $('chRoad').addEventListener('click', wkAlign); $('btnWkStab').addEventListener('click', wkToggleStab);
@@ -5609,7 +5642,7 @@ const WKC_LS = 'ss_cam';
 S.cam = { fps: 60, res: 1080, dev: '' };
 (function wkCamLoad() { try { const o = JSON.parse(localStorage.getItem(WKC_LS) || '{}'); if (o.fps === 30 || o.fps === 60) S.cam.fps = o.fps; if (o.res === 720 || o.res === 1080) S.cam.res = o.res; if (typeof o.dev === 'string') S.cam.dev = o.dev; } catch (_) {} })();
 function wkCamSave() { try { localStorage.setItem(WKC_LS, JSON.stringify(S.cam)); } catch (_) {} }
-const WKC = { devs: [], max: null, got: null, req: null, tried: '' };
+const WKC = { devs: [], max: null, got: null, req: null, tried: '', diag: '' };
 async function wkCamList() {
   try { const d = await navigator.mediaDevices.enumerateDevices(); WKC.devs = d.filter(x => x.kind === 'videoinput'); } catch (_) { WKC.devs = []; }
 }
@@ -5642,6 +5675,27 @@ function wkCamNote() {
     S.camNote = 'Браузер отдаёт ' + Math.round(f) + ' fps' + (WKC.max ? ' (камера заявляет максимум ' + Math.round(WKC.max) + ')' : '') + '. ' + (WKC.max && WKC.max < 55 ? 'Эта камера/режим 60 fps в браузере не даёт: попробуй другой объектив или 720p.' : 'Попробуй 720p или основной объектив; в сумерках камера сама снижает частоту из-за выдержки.');
   } else if (S.camNote && f && f >= 50 && S.camInfo && video.videoWidth >= 1280) S.camNote = '';
 }
+
+// диагностика: что браузер реально отдаёт при строгом запросе 60/30 fps на разных разрешениях
+async function wkCamDiag(pre) {
+  const L = [], log = t => { L.push(t); WKC.diag = L.join('\n'); pre.textContent = WKC.diag; };
+  const wasCam = S.srcKind === 'camera'; if (wasCam) stopSource();
+  const m = (navigator.userAgent.match(/Chrome\/[\d.]+/) || [''])[0], dev = S.cam.dev ? { deviceId: { exact: S.cam.dev } } : { facingMode: { ideal: 'environment' } };
+  log((m || navigator.userAgent.slice(0, 60)) + ' · устройств: ' + WKC.devs.length);
+  let ok60 = false;
+  for (const [h, w, f] of [[1080, 1920, 60], [720, 1280, 60], [480, 640, 60], [1080, 1920, 30], [720, 1280, 30]]) {
+    let st = null, cp = null, er = '';
+    try {
+      const stm = await navigator.mediaDevices.getUserMedia({ audio: false, video: Object.assign({ width: { ideal: w }, height: { ideal: h }, frameRate: { exact: f } }, dev) });
+      const tr = stm.getVideoTracks()[0]; st = tr.getSettings(); try { cp = tr.getCapabilities(); } catch (_) {}
+      await new Promise(r => setTimeout(r, 400)); stm.getTracks().forEach(t => t.stop());
+    } catch (e) { er = e && e.name ? e.name : String(e); }
+    if (st) { log('✓ ' + h + 'p · ' + f + ' fps → ' + st.width + '×' + st.height + ' · ' + Math.round(st.frameRate || 0) + ' fps' + (cp && cp.frameRate ? ' (диапазон камеры ' + Math.round(cp.frameRate.min) + '–' + Math.round(cp.frameRate.max) + ')' : '')); if (f === 60 && st.frameRate >= 55) ok60 = true; }
+    else log('✗ ' + h + 'p · ' + f + ' fps: ' + (er === 'OverconstrainedError' ? 'браузер/камера не поддерживает' : er));
+  }
+  log(ok60 ? 'Итог: 60 fps доступны — выбери 60 fps и нужное разрешение выше, затем «Применить».' : 'Итог: в этом браузере 60 fps недоступны (камера отдаёт максимум 30). Обходной путь: снимай видео в штатном приложении камеры на 60 fps и открывай его кнопкой «Видеофайл» — но у файла нет датчиков телефона, тряска не компенсируется.');
+  if (wasCam) { try { await startCamera(); renderStep(true); } catch (_) {} }
+}
 function wkCamCard(box) {
   const C = S.cam, card = el('div', { class: 'card wkcard' }, el('div', { class: 'ct', text: 'Камера: частота кадров и объектив' }));
   card.append(el('div', { class: 'wksub', text: 'Частота кадров' }), seg(['30 fps', '60 fps'], C.fps === 60 ? 1 : 0, i => { C.fps = i === 1 ? 60 : 30; wkCamSave(); }));
@@ -5662,10 +5716,164 @@ function wkCamCard(box) {
     try { await startCamera(); setStatus('Камера включена: ' + S.camInfo + (S.camNote ? '. ' + S.camNote : ''), S.camNote ? 'warn' : 'ok'); renderStep(true); initLevelIfOn(); toast('Камера: ' + S.camInfo, 3500); }
     catch (e) { info.textContent = camErrorText(e); }
   } }, '↻ Применить и перезапустить камеру'));
+  const pre = el('div', { class: 'status', style: 'white-space:pre-line;font-size:12px', hidden: true });
+  if (WKC.diag) { pre.hidden = false; pre.textContent = WKC.diag; }
+  card.append(el('button', { class: 'btn small', type: 'button', onclick: async () => { pre.hidden = false; pre.textContent = 'Проверяю…'; await wkCamDiag(pre); } }, '🔍 Диагностика: что даёт камера'), pre);
   box.append(card);
 }
 if (typeof module !== 'undefined') module.exports = {};
 /* ==== WALK:CAM:END ==== */
+
+/* ==== WALK:STREET:BEGIN ====
+ * «Память дороги»: (1) сохранение калибровки дороги под именем и запуск по ней без расстановки ворот;
+ * (2) геометрия дороги по координатам (широта, долгота[, высота]) — кривизна и уклон вдоль улицы, привязка по GPS и пройденному пути.
+ * Кривизна: > 0 — дорога впереди поворачивает вправо. Уклон: > 0 — дорога впереди идёт в горку. */
+const WkStreet = (() => {
+  const D2R = Math.PI / 180, cl = (v, a, b) => (v < a ? a : (v > b ? b : v));
+  // «широта, долгота[, высота]» построчно; берём числа из строки (подходит и вставка из Google Карт: «56.9496, 24.1052»)
+  function parse(text) {
+    const pts = [], bad = []; const lines = String(text || '').split(/\r?\n/);
+    lines.forEach((ln, i) => {
+      const t = ln.trim(); if (!t) return;
+      const m = t.match(/-?\d+(?:\.\d+)?/g); if (!m || m.length < 2) { bad.push(i + 1); return; }
+      const lat = +m[0], lon = +m[1], z = m.length >= 3 ? +m[2] : null;
+      if (!(Math.abs(lat) <= 90 && Math.abs(lon) <= 180)) { bad.push(i + 1); return; }
+      pts.push({ lat, lon, z: z != null && isFinite(z) ? z : null });
+    });
+    return { pts, bad };
+  }
+  // полилиния → равномерная выборка 5 м: курс, кривизна, уклон (сглаженные)
+  function build(pts, step) {
+    step = step || 5;
+    if (!pts || pts.length < 2) return null;
+    const lat0 = pts[0].lat, lon0 = pts[0].lon, kx = 111320 * Math.cos(lat0 * D2R), ky = 110540;
+    const P = pts.map(p => ({ x: (p.lon - lon0) * kx, y: (p.lat - lat0) * ky, z: p.z }));
+    const cum = [0]; for (let i = 1; i < P.length; i++) cum.push(cum[i - 1] + Math.hypot(P[i].x - P[i - 1].x, P[i].y - P[i - 1].y));
+    const len = cum[cum.length - 1]; if (!(len > 2 * step)) return null;
+    const n = Math.floor(len / step) + 1, xs = [], ys = [], zs = []; let j = 0; const hasZ = P.every(p => p.z != null);
+    for (let i = 0; i < n; i++) {
+      const s = Math.min(len, i * step); while (j < P.length - 2 && cum[j + 1] < s) j++;
+      const seg = cum[j + 1] - cum[j] || 1, f = cl((s - cum[j]) / seg, 0, 1);
+      xs.push(P[j].x + (P[j + 1].x - P[j].x) * f); ys.push(P[j].y + (P[j + 1].y - P[j].y) * f);
+      zs.push(hasZ ? P[j].z + (P[j + 1].z - P[j].z) * f : 0);
+    }
+    const smooth = (a, r) => a.map((_, i) => { let s = 0, c = 0; for (let k = Math.max(0, i - r); k <= Math.min(a.length - 1, i + r); k++) { s += a[k]; c++; } return s / c; });
+    // курс по хорде ±2 шага (≈ ±10 м), с разворачиванием; сглаживание по ±15 м
+    const hd = []; let prev = null;
+    for (let i = 0; i < n; i++) {
+      const a = Math.max(0, i - 2), b = Math.min(n - 1, i + 2); let h = Math.atan2(xs[b] - xs[a], ys[b] - ys[a]);
+      if (prev != null) { while (h - prev > Math.PI) h -= 2 * Math.PI; while (h - prev < -Math.PI) h += 2 * Math.PI; }
+      hd.push(h); prev = h;
+    }
+    const hs = smooth(hd, 3), zS = smooth(zs, 3), kap = [], gr = [];
+    for (let i = 0; i < n; i++) {
+      const a = Math.max(0, i - 2), b = Math.min(n - 1, i + 2), ds = (b - a) * step || 1;
+      kap.push(cl((hs[b] - hs[a]) / ds, -1 / 8, 1 / 8));
+      gr.push(hasZ ? cl((zS[b] - zS[a]) / ds, -0.3, 0.3) : 0);
+    }
+    return { step, n, len, lat0, lon0, kx, ky, xs, ys, hd: hs, kap, gr, hasZ };
+  }
+  const lerp = (a, s, step) => { const f = s / step, i = cl(Math.floor(f), 0, a.length - 2), t = cl(f - i, 0, 1); return a[i] + (a[i + 1] - a[i]) * t; };
+  const at = (poly, s) => { s = cl(s, 0, poly.len); return { kap: lerp(poly.kap, s, poly.step), gr: lerp(poly.gr, s, poly.step), hd: lerp(poly.hd, s, poly.step) }; };
+  // ближайшая точка полилинии к (lat, lon): s и расстояние
+  function project(poly, lat, lon) {
+    const x = (lon - poly.lon0) * poly.kx, y = (lat - poly.lat0) * poly.ky; let best = { d: Infinity, s: 0 };
+    for (let i = 0; i + 1 < poly.n; i++) {
+      const ax = poly.xs[i], ay = poly.ys[i], dx = poly.xs[i + 1] - ax, dy = poly.ys[i + 1] - ay, L2 = dx * dx + dy * dy || 1, t = cl(((x - ax) * dx + (y - ay) * dy) / L2, 0, 1);
+      const d = Math.hypot(x - (ax + t * dx), y - (ay + t * dy)); if (d < best.d) best = { d, s: Math.min(poly.len, (i + t) * poly.step) };
+    }
+    return best;
+  }
+  /* Состояние вдоль улицы в ходе замера: s — положение вдоль полилинии, dir — идём к концу (+1) или к началу (−1) списка.
+     Между GPS-фиксами s ведёт одометрия, фикс подтягивает s (вес ∝ 1/точность). */
+  class Tracker {
+    constructor(poly, o) { o = o || {}; this.poly = poly; this.dir = o.dir === -1 ? -1 : 1; this.s = cl(o.s0 || 0, 0, poly.len); this.wPrev = null; this.gT = -1; this.gS = null; this.gMove = 0; this.nFix = 0; this.d = null; this.kap = 0; this.gr = 0; this.gCal = o.gCal || 0; this.look = o.look || 12; }
+    update(w, gps) {   // w — пройденный путь, м; gps — { t, lat, lon, acc } | null
+      if (this.wPrev != null) this.s = cl(this.s + this.dir * (w - this.wPrev), 0, this.poly.len);
+      this.wPrev = w;
+      if (gps && gps.lat != null && gps.t !== this.gT && gps.acc < 40) {
+        this.gT = gps.t; const pr = project(this.poly, gps.lat, gps.lon); this.d = pr.d;
+        if (pr.d < 60) {
+          if (this.gS != null) { const dd = pr.s - this.gS; this.gMove += dd; if (Math.abs(this.gMove) > 15) { this.dir = this.gMove > 0 ? 1 : -1; this.gMove = 0; } }
+          this.gS = pr.s;
+          const k = this.nFix === 0 ? 1 : cl(8 / Math.max(4, gps.acc), 0.1, 0.5); this.s += k * (pr.s - this.s); this.nFix++;
+        }
+      }
+      const sa = cl(this.s + this.dir * this.look, 0, this.poly.len), a = at(this.poly, sa);
+      this.kap = this.dir * a.kap;            // + вправо по ходу движения
+      this.gr = 100 * this.dir * a.gr;        // % по ходу движения (+ вверх)
+      return this;
+    }
+  }
+  return { parse, build, at, project, Tracker };
+})();
+if (typeof module !== 'undefined') module.exports = WkStreet;
+
+/* ---------- хранилище дорог ---------- */
+const WKT_LS = 'ss_streets';
+function wkStreetsGet() { try { return JSON.parse(localStorage.getItem(WKT_LS) || '{}') || {}; } catch (_) { return {}; } }
+function wkStreetsSet(o) { try { localStorage.setItem(WKT_LS, JSON.stringify(o)); return true; } catch (e) { toast('Не удалось сохранить: память браузера заполнена.'); return false; } }
+const WKT = { text: '', poly: null, dirCal: 1 };   // координаты, введённые на шаге 1 (рабочие)
+function wkStreetApplyText(text) {
+  WKT.text = text; const r = WkStreet.parse(text); WKT.poly = r.pts.length >= 2 ? WkStreet.build(r.pts) : null;
+  const msg = [];
+  if (r.bad.length) msg.push('не разобраны строки: ' + r.bad.slice(0, 6).join(', '));
+  if (!WKT.poly) return { ok: false, text: (r.pts.length < 2 ? 'Нужно не меньше двух точек (по одной на строку: широта, долгота).' : 'Дорога слишком короткая (нужно > 10 м).') + (msg.length ? ' ' + msg.join('; ') : '') };
+  const P = WKT.poly; let kmax = 0, gmax = 0; for (let i = 0; i < P.n; i++) { kmax = Math.max(kmax, Math.abs(P.kap[i])); gmax = Math.max(gmax, Math.abs(P.gr[i])); }
+  return { ok: true, text: 'Дорога: ' + fmt(P.len, 0) + ' м, ' + r.pts.length + ' точек; самый крутой поворот R ≈ ' + (kmax > 1e-3 ? fmt(1 / kmax, 0) + ' м' : '— (прямая)') + (P.hasZ ? '; макс. уклон ' + fmt(100 * gmax, 1) + ' %' : '; высот нет — уклон не учитывается') + (msg.length ? ' · ' + msg.join('; ') : '') };
+}
+function wkA0Now() { return WKR.att0 && (WKS.useRos ? WKR.att0.R || WKR.att0.F : WKR.att0.F || WKR.att0.R); }
+// сохранить текущую калибровку (из мастера) как дорогу
+function wkStreetSave(name, C) {
+  name = String(name || '').trim(); if (!name) { toast('Введи название дороги.'); return false; }
+  const a0 = wkA0Now(); if (!a0) { toast('Ориентация при заморозке не записана: включи датчики на шаге 1 и заморозь кадр заново.', 5000); return false; }
+  const gps = WKS.gps, b = {
+    v: 1, name, saved: Date.now(), asp: C.asp, cam: C.cam, cal: C.cal, roadX: C.roadX, att0: { th: a0.th, ph: a0.ph }, walk: { H: S.walk.H, curb: S.walk.curb, stride: S.walk.stride },
+    fit: { f: C.fit.f, th: C.fit.th, H: C.fit.H, s0: C.fit.s0, rmsPct: C.fit.rmsPct, fovDeg: C.fit.fovDeg }, ptsText: WKT.text || '', dirCal: WKT.dirCal, sCal: null, gCal: 0
+  };
+  if (WKT.poly) {   // где на улице шла калибровка: по GPS, иначе — первая точка
+    let s = 0; if (gps && gps.lat != null && gps.acc < 40) { const pr = WkStreet.project(WKT.poly, gps.lat, gps.lon); if (pr.d < 80) s = pr.s; }
+    b.sCal = s; b.gCal = 100 * WKT.dirCal * WkStreet.at(WKT.poly, s).gr;
+  }
+  const all = wkStreetsGet(); all[name] = b; if (!wkStreetsSet(all)) return false;
+  toast('Дорога «' + name + '» сохранена.' + (WKT.poly ? '' : ' (без координат — только калибровка)'), 3500); return true;
+}
+function wkStreetDelete(name) { const all = wkStreetsGet(); delete all[name]; wkStreetsSet(all); }
+function wkStreetExport(name) {
+  const b = wkStreetsGet()[name]; if (!b) return;
+  try { const url = URL.createObjectURL(new Blob([JSON.stringify(b)], { type: 'application/json' })), a = document.createElement('a'); a.href = url; a.download = 'doroga-' + name.replace(/[^\wА-Яа-я-]+/g, '_') + '.json'; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000); }
+  catch (_) { toast('Не удалось выгрузить файл.'); }
+}
+function wkStreetImport(file) {
+  const rd = new FileReader();
+  rd.onload = () => { try { const b = JSON.parse(rd.result); if (!b || !b.cam || !b.cal || !b.roadX || !b.att0 || !b.name) throw 0; const all = wkStreetsGet(); all[String(b.name)] = b; if (wkStreetsSet(all)) { toast('Дорога «' + b.name + '» загружена из файла.', 3000); renderStep(true); } } catch (_) { toast('Файл не похож на сохранённую дорогу.'); } };
+  rd.readAsText(file);
+}
+// запуск по сохранённой дороге: заморозка текущего кадра без ворот, калибровка и опорная ориентация — из памяти
+async function wkStartStreet(name) {
+  const b = wkStreetsGet()[name]; if (!b) { toast('Дорога не найдена.'); return; }
+  if (S.srcKind !== 'camera') { toast('Сначала включи камеру (кнопка «Камера» выше): запуск по сохранённой дороге работает только с камерой.', 5000); return; }
+  S.walk.on = true; Object.assign(S.walk, { H: b.walk.H || S.walk.H, curb: b.walk.curb || S.walk.curb, stride: b.walk.stride || S.walk.stride });
+  if (!WKS.on) { const ok = await wkSensStart(); if (!ok) { toast('Датчики нужны для режима «Ходьба»: разреши доступ и повтори.', 5000); return; } }
+  wkGpsStart();
+  try { doFreeze(); } catch (e) { toast('Не удалось взять кадр: ' + (e && e.message ? e.message : e)); return; }
+  if (!S.frozen) { toast('Кадр не получен.'); return; }
+  const asp = S.frozen.w / S.frozen.h;
+  if (Math.abs(asp / b.asp - 1) > 0.05) { toast('Дорога сохранена при другой ориентации экрана (' + fmt(b.asp, 2) + ' против ' + fmt(asp, 2) + '). Поверни телефон как при сохранении.', 6000); S.frozen = null; S.showFrozen = false; renderStep(true); return; }
+  WKR.street = {
+    name, C: { ok: true, cam: b.cam, cal: b.cal, roadX: b.roadX, fit: Object.assign({ fovDeg: 0 }, b.fit), road: { X: b.roadX }, asp: b.asp, msg: [], ph0: b.cal.ph },
+    att0: b.att0, poly: b.ptsText ? (() => { const r = WkStreet.parse(b.ptsText); return r.pts.length >= 2 ? WkStreet.build(r.pts) : null; })() : null, dir: b.dirCal === -1 ? -1 : 1, sCal: b.sCal || 0, gCal: b.gCal || 0
+  };
+  startRun();
+}
+// обновление кривизны и уклона в кадре замера
+function wkStreetUpdate(X, t) {
+  const st = X.st; if (!st) return;
+  st.update(X.odo.w, WKS.gps);
+  const W = S.walk, eng = X.eng;
+  eng.kappaManual = W.curv + st.kap;
+  eng.alphaManual = Math.atan((W.grade + st.gr - st.gCal) / 100);   // уклон относительно места калибровки
+}
 
 
 /* =====================  Запуск приложения  ===================== */
