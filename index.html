@@ -4991,9 +4991,9 @@ if (typeof module !== 'undefined') module.exports = WkTracks;
 const WK_LS = 'ss_walk';
 S.walk = { on: false, H: 1.55, curb: 0.5, stride: 0.78, mode: 'C1', stab: false, imuSrc: 'auto', imuDelay: 0, gps: true, grade: 0, curv: 0, autoRoad: true, grid: true, zoom: 1.1, tau: 0.45, yawSign: 1, psiTrim: 0 };
 (function wkLoadSettings() {
-  try { const o = JSON.parse(localStorage.getItem(WK_LS) || '{}'); for (const k of Object.keys(S.walk)) if (k !== 'on' && k !== 'stab' && k !== 'grade' && k !== 'curv' && k !== 'psiTrim' && o[k] != null && typeof o[k] === typeof S.walk[k]) S.walk[k] = o[k]; } catch (_) {}
+  try { const o = JSON.parse(localStorage.getItem(WK_LS) || '{}'); for (const k of Object.keys(S.walk)) if (k !== 'stab' && k !== 'grade' && k !== 'curv' && k !== 'psiTrim' && o[k] != null && typeof o[k] === typeof S.walk[k]) S.walk[k] = o[k]; } catch (_) {}
 })();
-function wkSave() { try { const o = Object.assign({}, S.walk); delete o.on; delete o.stab; delete o.grade; delete o.curv; delete o.psiTrim; localStorage.setItem(WK_LS, JSON.stringify(o)); } catch (_) {} }
+function wkSave() { try { const o = Object.assign({}, S.walk); delete o.stab; delete o.grade; delete o.curv; delete o.psiTrim; localStorage.setItem(WK_LS, JSON.stringify(o)); } catch (_) {} }
 
 const WKR = { att0: null, run: null };   // служебное состояние режима: ориентация при заморозке кадра, объекты текущего замера
 const WKS = {
@@ -5052,7 +5052,7 @@ async function wkSensStart() {
   try {
     if (typeof DeviceMotionEvent.requestPermission === 'function') { const r = await DeviceMotionEvent.requestPermission(); WKS.perm = r; if (r !== 'granted') { toast('Доступ к датчикам движения запрещён: режим «Ходьба» без датчиков работает слабо.', 5000); return false; } }
   } catch (e) { toast('Не удалось получить доступ к датчикам: ' + (e && e.message ? e.message : e), 5000); return false; }
-  WKS.on = true; WKS.dmN = 0; WKS.tPrev = 0; WKS.hz = 0; WKS.fus.reset(); WKS.steps.reset(); WKS.chk = { n: 0, dth: 0, dph: 0, ok: null }; WKS.useRos = false;
+  WKS.epoch = (WKS.epoch || 0) + 1; WKS.on = true; WKS.dmN = 0; WKS.tPrev = 0; WKS.hz = 0; WKS.fus.reset(); WKS.steps.reset(); WKS.chk = { n: 0, dth: 0, dph: 0, ok: null }; WKS.useRos = false;
   window.addEventListener('devicemotion', wkOnMotion);
   wkRosStart();
   setTimeout(() => { if (WKS.on && WKS.dmN === 0) toast('Датчики не передают данные: проверь, что в браузере разрешены «Датчики движения и ориентации».', 6000); }, 2500);
@@ -5074,7 +5074,7 @@ function wkOnFreeze() {
   const ax = WkImu.snapAxes(WKS.aLp, WKS.ax) || WKS.ax; if (!ax) return;
   WKS.ax = ax;
   const lf = WKS.bufF.last(), lr = WKS.bufR.last();
-  WKR.att0 = { F: lf ? WkImu.attitude(lf.q, ax) : null, R: lr ? WkImu.attitude(lr.q, ax) : null };
+  WKR.att0 = { F: lf ? WkImu.attitude(lf.q, ax) : null, R: lr ? WkImu.attitude(lr.q, ax) : null, epoch: WKS.epoch, at: performance.now() };
 }
 
 /* ---------- GPS ---------- */
@@ -5086,6 +5086,7 @@ function wkGpsStart() {
   try {
     WKS.gpsId = navigator.geolocation.watchPosition(p => {
       const c = p.coords; WKS.gpsN++; WKS.gpsErr = ''; WKS.gps = { t: performance.now() / 1000, speed: c.speed, acc: c.accuracy, lat: c.latitude, lon: c.longitude };
+      if (typeof wkRecFix === 'function') wkRecFix(c);
       const X = WKR.run; if (X && c.speed != null && isFinite(c.speed)) X.gpsNew = { speed: c.speed, acc: c.accuracy };
     }, e => {
       const c = e && e.code;
@@ -5213,7 +5214,8 @@ async function startWalk() {
     }
     const eng = new WkMotion.PoseEngine(C.cam, C.cal, att0, { autoRoad: W.autoRoad });
     eng.yawSign = W.yawSign;
-    if (S.srcKind === 'camera' && WKS.on) { const an = wkAtt(performance.now() / 1000); if (an) eng.alignYaw(an); }   // курс считаем от направления на момент старта: телефон смотрит вдоль дороги
+    // курс держим непрерывно от заморозки кадра; выравниваем по направлению на старте только если опорный курс потерян (датчики перезапускали, прошло > 5 мин) или запуск по сохранённой дороге
+    if (S.srcKind === 'camera' && WKS.on && (ST || !WKR.att0 || WKR.att0.epoch !== WKS.epoch || performance.now() - WKR.att0.at > 300000)) { const an = wkAtt(performance.now() / 1000); if (an) eng.alignYaw(an); }
     const odo = new WkMotion.Odo({ stride: W.stride });
     const X = WKR.run = {
       cam: C.cam, cal: C.cal, roadX: C.roadX, fit: C.fit, eng, odo, vo: new WkVis.VisOdo(C.cam, aw, ah, {}), tk: new WkTracks.Tracker(C.cam, aw, ah, { mode: W.mode }),
@@ -5510,7 +5512,7 @@ function wkNumRow(label, value, min, max, onSet, unit) {
 function wkSourceCard(box) {
   const W = S.walk, card = el('div', { class: 'card wkcard' }, el('div', { class: 'ct', text: 'Режим замера' }));
   card.append(seg(['На штативе', 'Ходьба'], W.on ? 1 : 0, i => {
-    W.on = i === 1;
+    W.on = i === 1; wkSave();
     if (W.on) { S.viol.on = false; wkGpsStart(); wkSensStart().then(() => { wkEisSync(); }); }
     wkEisSync(); renderStep(true);
   }));
@@ -5600,7 +5602,13 @@ function wkStreetCard(box) {
   const info = el('div', { class: 'status', text: WKT.poly ? wkStreetApplyText(WKT.text).text : 'Координаты не заданы: кривизну и уклон задаёшь вручную в настройках замера.' });
   const apply = () => { const r = wkStreetApplyText(ta.value); info.textContent = ta.value.trim() ? r.text : 'Координаты не заданы: кривизну и уклон задаёшь вручную в настройках замера.'; info.className = 'status' + (ta.value.trim() ? (r.ok ? ' ok' : ' warn') : ''); };
   ta.addEventListener('change', apply); ta.addEventListener('blur', apply);
-  card.append(ta, info,
+  const recBtn = el('button', { class: 'btn', type: 'button' }, WKREC.on ? '⏹ Остановить запись' : '⏺ Записать маршрут по GPS (пройди улицу)');
+  const recInfo = el('div', { class: 'status', text: WKREC.on ? 'Идёт запись… точек: ' + WKREC.pts.length : 'Проще, чем вводить руками: нажми, пройди нужный отрезок улицы с включённым GPS на открытом месте, потом «Остановить» — точки заполнятся сами.' });
+  recBtn.addEventListener('click', () => {
+    if (!WKREC.on) { S.walk.gps = true; wkRecStart(); recBtn.textContent = '⏹ Остановить запись'; const iv = setInterval(() => { if (!WKREC.on || !recInfo.isConnected) { clearInterval(iv); return; } recInfo.textContent = 'Идёт запись… точек: ' + WKREC.pts.length + (WKS.gpsErr && !WKREC.pts.length ? ' · GPS: ' + WKS.gpsErr : ''); }, 700); }
+    else { const t = wkRecStop(); if (WKREC.pts.length < 3) { recInfo.textContent = 'Слишком мало точек (' + WKREC.pts.length + '): пройди хотя бы 25–30 м на открытом месте и повтори.'; recBtn.textContent = '⏺ Записать маршрут по GPS (пройди улицу)'; return; } ta.value = t; WKT.dirCal = 1; apply(); renderStep(true); toast('Маршрут записан: ' + WKREC.pts.length + ' точек. Идёшь «к концу списка».', 4000); }
+  });
+  card.append(recBtn, recInfo, ta, info,
     el('div', { class: 'wksub', text: 'В какую сторону идёшь относительно списка точек:' }),
     seg(['к концу списка', 'к началу списка'], WKT.dirCal === -1 ? 1 : 0, i => { WKT.dirCal = i === 1 ? -1 : 1; }));
   card.append(el('div', { class: 'wksub', text: 'Сохранённые дороги (калибровка + координаты). Сохранить новую можно на шаге «Проверка» кнопкой «Запомнить дорогу».' }));
@@ -5873,6 +5881,20 @@ function wkStreetUpdate(X, t) {
   const W = S.walk, eng = X.eng;
   eng.kappaManual = W.curv + st.kap;
   eng.alphaManual = Math.atan((W.grade + st.gr - st.gCal) / 100);   // уклон относительно места калибровки
+}
+
+/* ---------- запись маршрута по GPS: пройди улицу один раз — точки соберутся сами ---------- */
+const WKREC = { on: false, pts: [], last: null, t0: 0 };
+function wkRecFix(c) {
+  if (!WKREC.on || !(c.accuracy <= 25)) return;
+  const p = { lat: c.latitude, lon: c.longitude }, L = WKREC.last;
+  if (L) { const d = Math.hypot((p.lon - L.lon) * 111320 * Math.cos(p.lat * Math.PI / 180), (p.lat - L.lat) * 110540); if (d < 8) return; }
+  WKREC.pts.push(p); WKREC.last = p;
+}
+function wkRecStart() { WKREC.on = true; WKREC.pts = []; WKREC.last = null; WKREC.t0 = Date.now(); wkGpsStart(); }
+function wkRecStop() {   // сглаживаем шум GPS (скользящее среднее по 3 точкам, концы не трогаем) и отдаём текстом
+  WKREC.on = false; const a = WKREC.pts, out = a.map((p, i) => (i === 0 || i === a.length - 1) ? p : { lat: (a[i - 1].lat + p.lat + a[i + 1].lat) / 3, lon: (a[i - 1].lon + p.lon + a[i + 1].lon) / 3 });
+  return out.map(p => p.lat.toFixed(6) + ', ' + p.lon.toFixed(6)).join('\n');
 }
 
 
