@@ -2994,7 +2994,7 @@ $('btnGear').addEventListener('click', openSettings);
 function clearPasses() { for (const p of S.passes) if (p.snap) { try { URL.revokeObjectURL(p.snap); } catch (_) {} } S.passes = []; renderDrawer(); updateHud(true); }
 function speedColor(kmh, limit) { return kmh <= limit ? OK_COL : (kmh <= limit + CONFIG.limit.yellowOver ? WARN_COL : BAD_COL); }
 function onPass(ps) {
-  const rec = { id: ++S.nPass, wall: ps.wall, lane: ps.lane, laneName: laneName(ps.lane), dir: ps.dir, kmh: ps.kmh, kmhMin: ps.kmhMin, kmhMax: ps.kmhMax, n: ps.n, limit: S.limit, snap: ps.snap || null, rel: ps.rel, path: ps.path, live: ps.live, gap: ps.gap || null, q: ps.rel <= 0.05 && ps.path >= 15 && ps.n >= 8 ? 'ok' : 'низкое', cls: vcClass(ps.id), trackId: ps.id };
+  const rec = { id: ++S.nPass, wall: ps.wall, lane: ps.lane, laneName: laneName(ps.lane), dir: ps.dir, kmh: ps.kmh, kmhMin: ps.kmhMin, kmhMax: ps.kmhMax, n: ps.n, limit: S.limit, snap: ps.snap || null, rel: ps.rel, path: ps.path, live: ps.live, gap: ps.gap || null, q: ps.rel <= 0.05 && ps.path >= 15 && ps.n >= 8 ? 'ok' : 'низкое', cls: vcClass(ps.id), trackId: ps.id, t0: ps.t0 != null ? (S.srcKind === 'file' ? ps.t0 : ps.t0 - R.t0wall / 1000) : null, t1: ps.t1 != null ? (S.srcKind === 'file' ? ps.t1 : ps.t1 - R.t0wall / 1000) : null, approx: ps.rel > CONFIG.track.maxRelErr || ps.conf === 'low', conf: ps.conf || '', warm: !!ps.warm, tb: S.srcKind === 'file' ? 'от начала ролика' : 'от старта замера' };
   S.passes.unshift(rec);
   violFromMain(ps);
   while (S.passes.length > CONFIG.track.maxPasses) { const o = S.passes.pop(); if (o.snap) { try { URL.revokeObjectURL(o.snap); } catch (_) {} } }
@@ -3039,11 +3039,11 @@ function openSnap(p) {
 }
 function exportCsv() {
   if (!S.passes.length) { toast('Список проездов пуст.'); return; }
-  const rows = [['№', 'Время', 'Полоса', 'Название полосы', 'Направление', 'Скорость, км/ч', 'Мин, км/ч', 'Макс, км/ч', 'Лимит, км/ч', 'Превышение', 'σ, %', 'Путь, м', 'Точек', 'Число на метке', 'Качество', 'Дистанция, с', 'Дистанция, м', 'Близко', 'Тип ТС']];
+  const rows = [['№', 'Время', 'Полоса', 'Название полосы', 'Направление', 'Скорость, км/ч', 'Мин, км/ч', 'Макс, км/ч', 'Лимит, км/ч', 'Превышение', 'σ, %', 'Путь, м', 'Точек', 'Число на метке', 'Качество', 'Дистанция, с', 'Дистанция, м', 'Близко', 'Тип ТС', 'В ролике: начало, с', 'В ролике: конец, с', 'Приблизительно', 'Уверенность', 'Прогрев', 'Запись']];
   const d = x => x.toFixed(1).replace('.', ',');
   for (const p of S.passes.slice().reverse()) {
     const dt = new Date(p.wall);
-    rows.push([p.id, dt.getFullYear() + '-' + pad2(dt.getMonth() + 1) + '-' + pad2(dt.getDate()) + ' ' + timeStr(p.wall), p.lane, p.laneName, p.dir < 0 ? 'к камере' : 'от камеры', d(p.kmh), d(p.kmhMin), d(p.kmhMax), p.limit, p.kmh > p.limit ? 'да' : 'нет', d(100 * p.rel), d(p.path), p.n, p.live != null ? Math.round(p.live) : '', p.q, p.gap && !p.gap.slow ? d(p.gap.s) : '', p.gap ? d(p.gap.m) : '', p.gap && p.gap.lvl === 2 ? 'да' : '', p.cls != null ? vcName(p.cls) : '']);
+    rows.push([p.id, dt.getFullYear() + '-' + pad2(dt.getMonth() + 1) + '-' + pad2(dt.getDate()) + ' ' + timeStr(p.wall), p.lane, p.laneName, p.dir < 0 ? 'к камере' : 'от камеры', d(p.kmh), d(p.kmhMin), d(p.kmhMax), p.limit, p.kmh > p.limit ? 'да' : 'нет', d(100 * p.rel), d(p.path), p.n, p.live != null ? Math.round(p.live) : '', p.q, p.gap && !p.gap.slow ? d(p.gap.s) : '', p.gap ? d(p.gap.m) : '', p.gap && p.gap.lvl === 2 ? 'да' : '', p.cls != null ? vcName(p.cls) : '', p.t0 != null ? d(p.t0) : '', p.t1 != null ? d(p.t1) : '', p.approx ? 'да' : 'нет', p.conf || '', p.warm ? 'да' : '', 'ID ' + p.id + ' · ' + (p.approx ? '~' : '') + Math.round(p.kmh) + ' км/ч' + (p.t0 != null ? ' · ' + wkClock(p.t0) + ' ' + (p.tb || '') : '')]);
   }
   const csv = '\uFEFF' + rows.map(r => r.map(v => { v = String(v); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }).join(';')).join('\r\n');
   try {
@@ -3753,7 +3753,7 @@ async function startRec() {
   if (!R.running || REC.on) return;
   if (typeof MediaRecorder === 'undefined' || !cv.captureStream) { toast('Этот браузер не умеет записывать видео.'); return; }
   const vw = video.videoWidth, vh = video.videoHeight; if (!vw) { toast('Видео ещё не готово.'); return; }
-  if (S.srcKind === 'file') { clearPasses(); await restartFile(); toast('Запись идёт с начала видео, список проездов сброшен.', 3000); }
+  if (S.srcKind === 'file') { clearPasses(); await restartFile(); toast(S.fromStart ? 'Запись идёт с начала видео, список проездов сброшен.' : 'Запись идёт с заданного кадра (' + wkClock((S.frozen && S.frozen.t) || 0) + '), список проездов сброшен.', 3500); }
   const k = Math.min(1, 1280 / Math.max(vw, vh)), c = document.createElement('canvas');
   c.width = Math.round(vw * k / 2) * 2; c.height = Math.round(vh * k / 2) * 2;
   const mime = ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find(m => MediaRecorder.isTypeSupported(m)) || '';
@@ -3809,7 +3809,7 @@ async function restartFile() {
   flushTracks(); R.det.reset(); R.lastT = null; R.ended = false; R.paused = false; R.ghosts = [];
   if (R.gate) { R.gate.reset(); R.stabState = R.stabOn ? 'init' : 'off'; }
   $('btnPause').textContent = '⏸ Пауза'; setMsg('');
-  await seekTo(0);
+  await seekTo(S.fromStart ? 0 : ((S.frozen && S.frozen.t) || 0));   // как и при обычном старте: с начала ролика или с заданного кадра
   try { await video.play(); } catch (_) {}
 }
 video.addEventListener('ended', () => {
@@ -5895,6 +5895,14 @@ function wkRecStart() { WKREC.on = true; WKREC.pts = []; WKREC.last = null; WKRE
 function wkRecStop() {   // сглаживаем шум GPS (скользящее среднее по 3 точкам, концы не трогаем) и отдаём текстом
   WKREC.on = false; const a = WKREC.pts, out = a.map((p, i) => (i === 0 || i === a.length - 1) ? p : { lat: (a[i - 1].lat + p.lat + a[i + 1].lat) / 3, lon: (a[i - 1].lon + p.lon + a[i + 1].lon) / 3 });
   return out.map(p => p.lat.toFixed(6) + ', ' + p.lon.toFixed(6)).join('\n');
+}
+
+// секунды → «м:сс.сс» (для ролика с часами: «ч:мм:сс.сс»)
+function wkClock(t) {
+  if (t == null || !isFinite(t)) return '';
+  const neg = t < 0; t = Math.abs(t); let c = Math.round(t * 100), cs = c % 100, sec = Math.floor(c / 100) % 60, m = Math.floor(c / 6000) % 60, h = Math.floor(c / 360000);
+  const p2 = v => (v < 10 ? '0' : '') + v;
+  return (neg ? '−' : '') + (h ? h + ':' + p2(m) : m) + ':' + p2(sec) + '.' + p2(cs);
 }
 
 
