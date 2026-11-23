@@ -1773,7 +1773,9 @@ class Tracker {
     const f = wlsLine(P, i0, n - 1);
     if (!f) { tr.blk = 'fit'; return; }
     tr.err = f.rel; tr.win = t - P[i0].t; tr.path = Math.abs(P[n - 1].s - P[0].s);
-    if (!(f.rel <= tc.showErr) || (f.rms > tc.maxLiveRmsM && f.rmsZ > tc.maxLiveZ)) { tr.stable = 0; tr.blk = 'err'; return; }   // ненадёжно: «…» или прежнее значение
+    const cl0 = calAt(this.cals, tr.lane - 1), zone0 = cl0 && isFinite(cl0.sMax - cl0.sBottom) ? cl0.sMax - cl0.sBottom : Infinity, tTr = zone0 / Math.max(25, Math.abs(f.slope));   // время проезда зоны, с
+    const eLim = tTr < 1.5 ? Math.min(0.22, tc.showErr * 1.5 / tTr) : tc.showErr;   // короткий проезд (быстрая машина, короткая зона): допускаем большую погрешность — число с «~» вместо серого до конца зоны; итоговый проезд строгий как был
+    if (!(f.rel <= eLim) || (f.rms > tc.maxLiveRmsM && f.rmsZ > tc.maxLiveZ)) { tr.stable = 0; tr.blk = 'err'; return; }   // ненадёжно: «…» или прежнее значение
     const fk = Math.abs(f.slope) * 3.6, prevK = tr.lastSlope == null ? null : Math.abs(tr.lastSlope) * 3.6;
     if (fk > tc.maxSpeedKmh) { tr.stable = 0; tr.blk = 'vmax'; return; }
     // согласованность: оценки подряд должны совпадать; резкий скачок — выброс (пятно, осколок), его не принимаем
@@ -1788,7 +1790,7 @@ class Tracker {
     const nMin = tr.blob && tr.blob.det && vdGate() ? Math.min(3, tc.minShowPts) : tc.minShowPts;   // Т1.3: рамка детектора подтверждает машину — хватает 3 точек
     // длина зоны измерения, м (от низа кадра до последних ворот +10 %): при воротах только вблизи (≈17 м) машина проходит её за ~0,6 с — пороги пути и окна берём долей зоны
     const cl = calAt(this.cals, tr.lane - 1), zone = cl && isFinite(cl.sMax - cl.sBottom) ? cl.sMax - cl.sBottom : Infinity;
-    const pS = Math.max(tc.minTravelM, Math.min(tc.minShowPath, 0.5 * zone)), wS = Math.min(tc.minShowWinSec, 0.5 * zone / 25), pE = Math.max(tc.minTravelM, Math.min(tc.earlyPath, 0.4 * zone)), wE = Math.min(tc.earlyWinSec, 0.35 * zone / 25);
+    const pS = Math.max(tc.minTravelM, Math.min(tc.minShowPath, 0.5 * zone)), vz = Math.max(25, Math.abs(f.slope)), wS = Math.min(tc.minShowWinSec, 0.5 * zone / vz), pE = Math.max(tc.minTravelM, Math.min(tc.earlyPath, 0.4 * zone)), wE = Math.min(tc.earlyWinSec, 0.35 * zone / vz);
     const mv = tr.moved && n >= nMin, strictOk = mv && tr.stable >= tc.showStable && tr.win >= wS && tr.path >= pS;
     const bl = tr.blob, shapeOk = !bl || !vdGate() || bl.det || (bl.area >= 0.35 * bl.bw * (bl.y1 - bl.y0 + 1) && bl.bw >= 0.5 * bl.laneW);   // как pendOk: рамка детектора либо размер и форма
     const earlyOk = !strictOk && mv && shapeOk && tr.stable >= tc.earlyStable && tr.win >= wE && tr.path >= pE;   // live-число раньше, с «~»
@@ -1810,14 +1812,15 @@ class Tracker {
     const gc = gb && gb.T ? gb.T.filter(x => x != null).length : 0;
     const fastOk = !strictOk && mv && shapeOk && tr.stable >= tc.earlyStable && (gc >= tc.fastGates || tr.path >= tc.fastPathM);   // плашка выходит из серого после 2 пересечённых ворот или 10 м пути, не дожидаясь конца зоны
     let kmh = Math.abs(tr.flt.v) * 3.6;
-    if (!tr.strict && !strictOk) kmh *= 1 - Math.min(f.rel, 0.1);   // «~» — нижняя граница: минус ожидаемая погрешность
+    if (!tr.strict && !strictOk) kmh *= 1 - Math.min(f.rel, 0.2);   // «~» — нижняя граница: минус ожидаемая погрешность
     if (tr.shown && tr.kmh != null) kmh = clamp(kmh, tr.kmh - tc.maxStepKmh, tr.kmh + (tr.strict ? tc.maxStepKmh : 1));   // «~» растёт не быстрее 1 км/ч за шаг
     kmh = Math.round(kmh);
     const dAB = kB == null ? null : Math.abs(kA - kB) / Math.max(kA, kB, 1);   // не усредняем: расхождение только снижает доверие
-    const ga = this._agree(tr);
+    const Tc = gb && gb.T ? gb.T.filter(x => x != null) : [], tSp = Tc.length >= 2 ? Math.max(...Tc) - Math.min(...Tc) : 0, dtF = n >= 2 ? P[n - 1].t - P[n - 2].t : 0;
+    let ga = this._agree(tr); if (tSp > 0) ga = Math.max(ga, 1.2 * dtF / tSp);   // на 150+ км/ч между воротами десятые доли секунды: один кадр — это уже 5–10 %
     let conf = dAB == null ? 'mid' : dAB <= ga ? 'high' : dAB <= 2.5 * ga ? 'mid' : 'low';
     if (conf === 'high' && (tr.stable < tc.showStable || f.rel > tc.maxRelErr)) conf = 'mid';
-    if (kmh > tc.highKmh && conf !== 'high') conf = 'low';   // высокую скорость не режем, а проверяем вторым способом → «~140»
+    if (kmh > tc.highKmh && conf === 'mid' && dAB != null) conf = 'low';   // выше highKmh ворота пока не пересечены — число показывается с «~», а не прячется; расхождение A/B средней силы — не показываем   // высокую скорость не режем, а проверяем вторым способом → «~140»
     tr.rawK = Math.abs(raw) * 3.6; tr.fltK = Math.abs(tr.flt.v) * 3.6;
     { const vh = tr.vh || (tr.vh = []); vh.push({ t, k: tr.fltK }); while (vh.length > 2 && t - vh[0].t > 2 * tc.accWinSec + 0.5) vh.shift();
       let o = null; for (let i = vh.length - 1; i >= 0; i--) if (t - vh[i].t >= tc.accWinSec) { o = vh[i]; break; }
@@ -2659,6 +2662,7 @@ function buildLanes(box) {
     tp.addEventListener('change', () => { L.types[i] = tp.value; redraw(); });
     box.append(el('div', { class: 'row lane' }, el('span', { class: 'chip2', text: 'П' + (i + 1) }), nm, tp));
   }
+  box.append(laneAutoCard());
   box.append(el('div', { id: 'laneStatus', class: 'status' }));
   updateLaneStatus();
 }
@@ -2993,6 +2997,7 @@ $('btnGear').addEventListener('click', openSettings);
 
 /* =====================  Список проездов, статистика, CSV, снимки  ===================== */
 function clearPasses() { for (const p of S.passes) if (p.snap) { try { URL.revokeObjectURL(p.snap); } catch (_) {} } S.passes = []; renderDrawer(); updateHud(true); }
+function holdFor(kmh, base) { const v = (kmh || 0) / 3.6; return v > 1 ? clamp(5 / v, 0.1, base) : base; }   // сколько метка живёт после потери машины: ~5 м пути, но не дольше base (150 км/ч — 0,12 с, 50 км/ч — 0,36 с)
 function speedColor(kmh, limit) { return kmh <= limit ? OK_COL : (kmh <= limit + CONFIG.limit.yellowOver ? WARN_COL : BAD_COL); }
 function onPass(ps) {
   const rec = { id: ++S.nPass, wall: ps.wall, lane: ps.lane, laneName: laneName(ps.lane), dir: ps.dir, kmh: ps.kmh, kmhMin: ps.kmhMin, kmhMax: ps.kmhMax, n: ps.n, limit: S.limit, snap: ps.snap || null, rel: ps.rel, path: ps.path, live: ps.live, gap: ps.gap || null, q: ps.rel <= 0.05 && ps.path >= 15 && ps.n >= 8 ? 'ok' : 'низкое', cls: vcClass(ps.id), trackId: ps.id, t0: ps.t0 != null ? (S.srcKind === 'file' ? ps.t0 : ps.t0 - R.t0wall / 1000) : null, t1: ps.t1 != null ? (S.srcKind === 'file' ? ps.t1 : ps.t1 - R.t0wall / 1000) : null, approx: ps.rel > CONFIG.track.maxRelErr || ps.conf === 'low', conf: ps.conf || '', warm: !!ps.warm, tb: S.srcKind === 'file' ? 'от начала ролика' : 'от старта замера' };
@@ -3002,7 +3007,7 @@ function onPass(ps) {
   for (let i = CONFIG.ui.snapKeep; i < S.passes.length; i++) { const o = S.passes[i]; if (o.snap) { try { URL.revokeObjectURL(o.snap); } catch (_) {} o.snap = null; } }   // снимки хранятся только у последних проездов
   if (ps.blob && R.geo) {
     const b = ps.blob;
-    R.ghosts.push({ x: b.xc, y: b.y0, cx: b.xc, ce: b.yEdge, kmh: ps.kmh, tilde: ps.rel > CONFIG.track.maxRelErr, dir: ps.dir, lane: ps.lane, id: ps.id, gap: ps.gap || null, until: R.tNow + CONFIG.ui.bubbleHoldSec });   // срок жизни — в видео-времени
+    R.ghosts.push({ x: b.xc, y: b.y0, cx: b.xc, ce: b.yEdge, kmh: ps.kmh, tilde: ps.rel > CONFIG.track.maxRelErr, dir: ps.dir, lane: ps.lane, id: ps.id, gap: ps.gap || null, until: R.tNow + holdFor(ps.kmh, CONFIG.ui.bubbleHoldSec) });   // срок жизни — в видео-времени
   }
   renderDrawer(); updateHud(true);
 }
@@ -4035,7 +4040,7 @@ function drawRun() {
       const bl = tr.blob; if (!bl) continue;
       const age = R.tNow - (tr.pts.length ? tr.pts[0].t : tr.t0);
       let show = false, pending = false;
-      if (tr.dup || R.tNow - tr.tLast > CONFIG.ui.tagGraceSec) continue;   // Т3.3: метка гаснет ≤ 0,5 с видео после потери блоба
+      if (tr.dup || R.tNow - tr.tLast > holdFor(tr.kmh != null ? tr.kmh : tr.rawK, CONFIG.ui.tagGraceSec)) continue;   // Т3.3: метка гаснет ≤ 0,5 с видео после потери блоба
       if (tr.shown && tr.kmh != null && tr.kmh >= minK) show = true;
       else if (!tr.shown && tr.moved && tr.frames >= tc.confirmFrames && (bl.touching ? tr.pts.length > 0 : age <= tc.pendingMaxSec) && bl.area >= CONFIG.blob.minAreaPx && pendOk(bl)) pending = true;
       if (pending && tr.pts.length < 3) pending = false;   // у горизонта без измерений метку не рисуем
@@ -5907,6 +5912,163 @@ function wkClock(t) {
 }
 
 
+/* ==== LANEAUTO:BEGIN ====
+ * Автоопределение полос по кадру: разметка + направление дороги.
+ *  1) гребень разметки — яркая узкая полоса на более тёмном фоне (три масштаба, перспектива: у камеры линии шире, у горизонта уже);
+ *  2) по строкам берутся только пики гребня, Хаф x = a + b·y голосует по строкам (близкие и далёкие участки линии весят одинаково);
+ *  3) общая точка схода (VP) — направление дороги: машины, тени, кромки зданий в неё не попадают и отсеиваются;
+ *  4) линии уточняются МНК «через VP»; сплошная / прерывистая — по доле строк с разметкой и числу разрывов вдоль линии;
+ *  5) пропущенная посередине линия достраивается по ширине соседних полос (помечается «inferred»).
+ */
+function laneAutoDetect(g, w, h, o) {
+  o = Object.assign({ top: 0.30, bot: 0.98, maxLanes: 3 }, o || {});
+  const vpMin = o.vpMin != null ? o.vpMin : -0.5 * h;   // по двум линиям точка схода обязана лежать у горизонта (в кадре или чуть выше); далёкая — только если её подтверждают ≥ 3 линии
+  const y0 = Math.max(2, Math.round(h * o.top)), y1 = Math.min(h - 3, Math.round(h * o.bot)), ym = (y0 + y1) / 2;
+  if (y1 - y0 < 24 || w < 64) return { ok: false, msg: 'Кадр слишком мал для поиска разметки.' };
+  // 1) гребень разметки
+  const R = new Float32Array(w * h), SW = new Uint8Array(w * h), pre = new Float32Array(w + 1), SC = [1, 2, 3, 5, 8], hist = new Uint32Array(256);
+  for (let y = y0; y <= y1; y++) {
+    pre[0] = 0; for (let x = 0; x < w; x++) pre[x + 1] = pre[x] + g[y * w + x];
+    const m = (a, b) => (pre[b + 1] - pre[a]) / (b - a + 1);
+    for (let x = 0; x < w; x++) {
+      let best = 0, bs = 1;
+      for (const s of SC) {
+        if (x - 4 * s < 0 || x + 4 * s >= w) continue;
+        const c = m(x - s, x + s), L = m(x - 4 * s, x - 2 * s), Rr = m(x + 2 * s, x + 4 * s), v = Math.min(c - L, c - Rr);
+        if (v > best) { best = v; bs = s; }
+      }
+      R[y * w + x] = best; SW[y * w + x] = bs; hist[Math.min(255, best | 0)]++;
+    }
+  }
+  const nTot = (y1 - y0 + 1) * w; let acc = 0, p97 = 0; for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc >= nTot * 0.03) { p97 = v; break; } }
+  const T = Math.max(12, 0.55 * p97);
+  // 2) пики по строкам → Хаф
+  const pts = [];
+  for (let y = y0; y <= y1; y++) for (let x = 2; x < w - 2; x++) {
+    const r = R[y * w + x];
+    if (r > T && r >= R[y * w + x - 1] && r > R[y * w + x + 1]) pts.push({ x, y, w: Math.min(r, 80), m: 2 * SW[y * w + x] + 1 });
+  }
+  if (pts.length < 40) return { ok: false, msg: 'Разметка почти не видна: линий не нашлось.' };
+  if (pts.length > 14000) { const k = Math.ceil(pts.length / 14000); for (let i = 0, j = 0; i < pts.length; i += k) pts[j++] = pts[i]; pts.length = Math.ceil(pts.length / k); }
+  const NB = 157, TH = i => (-78 + i) * Math.PI / 180, XO = 2 * w, XW = 5 * w, A = new Float32Array(NB * XW), BT = new Float32Array(NB);   // углы от вертикали −71…+71°: у широкоугольных камер линии пологие
+  for (let i = 0; i < NB; i++) BT[i] = Math.tan(TH(i));
+  for (const p of pts) for (let bi = 0; bi < NB; bi++) { const xm = Math.round(p.x - BT[bi] * (p.y - ym)) + XO; if (xm >= 0 && xm < XW) A[bi * XW + xm] += p.w; }
+  const peaks = []; let top = 0;
+  for (let k = 0; k < 20; k++) {
+    let bv = 0, bi = -1, bx = -1;
+    for (let i = 0; i < NB; i++) { const row = i * XW; for (let x = 0; x < XW; x++) if (A[row + x] > bv) { bv = A[row + x]; bi = i; bx = x; } }
+    if (bi < 0 || bv < 0.06 * top || bv < 25 * T * 0.6) break; if (!k) top = bv;
+    peaks.push({ b: BT[bi], xm: bx - XO });
+    for (let i = Math.max(0, bi - 3); i <= Math.min(NB - 1, bi + 3); i++) for (let x = Math.max(0, bx - 14); x <= Math.min(XW - 1, bx + 14); x++) A[i * XW + x] = 0;
+  }
+  // уточнение МНК по ближайшим пикам; покрытие строк и разрывы → сплошная / прерывистая
+  const byRow = new Map(); for (const p of pts) { if (!byRow.has(p.y)) byRow.set(p.y, []); byRow.get(p.y).push(p); }
+  const lines = [];
+  for (const pk of peaks) {
+    let a = pk.xm - pk.b * ym, b = pk.b, inl = [];
+    for (let it = 0; it < 3; it++) {
+      inl = []; const tol = (it < 2 ? 4 : 2.8) * Math.sqrt(1 + b * b);
+      for (const p of pts) if (Math.abs(p.x - (a + b * p.y)) <= tol) inl.push(p);
+      if (inl.length < 20) break;
+      let sw = 0, sy = 0, sx = 0, syy = 0, sxy = 0; for (const p of inl) { sw += p.w; sy += p.w * p.y; sx += p.w * p.x; syy += p.w * p.y * p.y; sxy += p.w * p.y * p.x; }
+      const den = sw * syy - sy * sy; if (Math.abs(den) < 1e-6) break; b = (sw * sxy - sy * sx) / den; a = (sx - b * sy) / sw;
+    }
+    if (inl.length < 20) continue;
+    const ys = inl.map(p => p.y).sort((u, v) => u - v), ya = ys[Math.floor(ys.length * 0.02)], yb = ys[Math.ceil(ys.length * 0.98) - 1];
+    if (yb - ya < 0.12 * h) continue;
+    const has = new Uint8Array(yb - ya + 1); for (const p of inl) if (p.y >= ya && p.y <= yb) has[p.y - ya] = 1;
+    let cov = 0, gaps = 0, run = 0; for (let i = 0; i < has.length; i++) { if (has[i]) { cov++; if (run >= 4) gaps++; run = 0; } else run++; }
+    if (run >= 4) gaps++;
+    cov /= has.length;
+    lines.push({ a, b, ya, yb, cov, gaps, score: inl.reduce((s, p) => s + p.w, 0), kind: cov >= 0.82 && gaps <= 2 ? 'solid' : cov >= 0.18 && gaps >= 2 ? 'dash' : 'solid?', pts: inl });
+  }
+  lines.sort((p, q) => q.score - p.score);
+  for (let i = lines.length - 1; i > 0; i--) for (let j = 0; j < i; j++) {   // тот же гребень, найденный в соседних ячейках Хафа
+    const ym2 = (lines[i].ya + lines[i].yb) / 2, dx = Math.abs(lines[i].a + lines[i].b * ym2 - (lines[j].a + lines[j].b * ym2)), da = Math.abs(Math.atan(lines[i].b) - Math.atan(lines[j].b));
+    if (dx < 10 && da < 0.035) { lines.splice(i, 1); break; }
+  }
+  if (o.dbg) console.log('peaks', peaks.length, 'lines', lines.map(l => [l.kind, Math.round(l.a + l.b * h * 0.95), l.cov.toFixed(2), l.gaps, Math.round(l.score), l.ya, l.yb].join(':')).join(' '));
+  if (lines.length < 2) return { ok: false, msg: 'Нашлось меньше двух линий разметки. Попробуй кадр, где разметка видна лучше, или задай границы вручную.' };
+  // 3) точка схода = направление дороги
+  let bestVp = null;
+  for (let i = 0; i < lines.length; i++) for (let j = i + 1; j < lines.length; j++) {
+    const L1 = lines[i], L2 = lines[j]; if (Math.abs(L1.b - L2.b) < 0.02) continue;
+    const vy = (L2.a - L1.a) / (L1.b - L2.b), vx = L1.a + L1.b * vy; if (!(vy < ym - 0.05 * h && vy > -3 * h)) continue;
+    const inl = lines.filter(Lx => {   // угловой критерий: направление линии и направление на VP из её середины отличаются ≤ 1,5° (допуск по x у далёкой VP обманывает)
+      const ymd = (Lx.ya + Lx.yb) / 2, mx = Lx.a + Lx.b * ymd, d1 = Math.atan2(Lx.b, 1) , d2 = Math.atan2(vx - mx, vy - ymd);   // угол от оси y, вдоль возрастания y
+      let dd = Math.abs(Math.atan(Lx.b) - Math.atan2(mx - vx, ymd - vy)); if (dd > Math.PI / 2) dd = Math.PI - dd; return dd <= 0.026;
+    }), sc = inl.reduce((s, Lx) => s + Lx.score, 0);
+    if (inl.length >= 2 && ((o.farVp && inl.length >= 3) || vy >= vpMin) && (!bestVp || sc > bestVp.sc)) bestVp = { x: vx, y: vy, inl, sc };
+  }
+  if (!bestVp) return { ok: false, msg: 'Линии не сходятся в одной точке (нет направления дороги). Проверь, что кадр снят вдоль дороги.' };
+  let L = bestVp.inl.filter(l => {
+    if (l.yb - l.ya < 0.25 * h || l.pts.length < 60) return true;
+    let n = 0, my = 0, mw = 0; for (const p of l.pts) { n++; my += p.y; mw += p.m; } my /= n; mw /= n;
+    let sy = 0, sw = 0, c = 0, mn = 99, mx = 0; for (const p of l.pts) { sy += (p.y - my) ** 2; sw += (p.m - mw) ** 2; c += (p.y - my) * (p.m - mw); mn = Math.min(mn, p.m); mx = Math.max(mx, p.m); }
+    const corr = sy > 0 && sw > 0 ? c / Math.sqrt(sy * sw) : 0;
+    return !(corr < 0.15 && mx - mn <= 4);   // ширина не растёт к низу кадра → вертикальный предмет, а не линия на дороге
+  });
+  if (L.length < 2) return { ok: false, msg: 'Найденные линии не похожи на разметку (нет перспективы). Попробуй другой кадр.' };
+  for (const l of L) {   // МНК через VP: x = vx + s·(y − vy)
+    let num = 0, den = 0; for (const p of l.pts) { num += p.w * (p.x - bestVp.x) * (p.y - bestVp.y); den += p.w * (p.y - bestVp.y) ** 2; }
+    l.s = den > 0 ? num / den : l.b; l.a = bestVp.x - l.s * bestVp.y; l.b = l.s;
+  }
+  const yr = y0 + 0.8 * (y1 - y0), xr = l => l.a + l.b * yr;
+  L.sort((p, q) => xr(p) - xr(q));
+  for (let i = L.length - 2; i >= 0; i--) if (xr(L[i + 1]) - xr(L[i]) < 0.035 * w) { if (L[i].score >= L[i + 1].score) L.splice(i + 1, 1); else L.splice(i, 1); }   // дубли одной линии
+  // 5) пропущенная линия посередине: зазор кратен ширине соседних полос
+  const gp = []; for (let i = 0; i + 1 < L.length; i++) gp.push(xr(L[i + 1]) - xr(L[i]));
+  const mw = gp.length ? gp.slice().sort((u, v) => u - v)[0] : 0;
+  for (let i = L.length - 2; i >= 0 && mw > 0; i--) {
+    const k = Math.round((xr(L[i + 1]) - xr(L[i])) / mw);
+    if (k >= 2 && k <= 3 && Math.abs((xr(L[i + 1]) - xr(L[i])) / mw - k) < 0.3) {
+      const add = []; for (let q = 1; q < k; q++) { const f = q / k, xq = xr(L[i]) + f * (xr(L[i + 1]) - xr(L[i])), s = (xq - bestVp.x) / (yr - bestVp.y); add.push({ a: bestVp.x - s * bestVp.y, b: s, kind: 'inferred', cov: 0, gaps: 0, score: 0, pts: [] }); }
+      L.splice(i + 1, 0, ...add);
+    }
+  }
+  while (L.length > o.maxLanes + 1) {   // лишние — отбрасываем крайнюю слабее
+    const wL = L[0].score, wR = L[L.length - 1].score; if (wL <= wR) L.shift(); else L.pop();
+  }
+  return { ok: true, vp: { x: bestVp.x, y: bestVp.y }, lines: L.map(l => ({ a: l.a, b: l.b, kind: l.kind, cov: l.cov, score: l.score })), T, nPts: pts.length };
+}
+
+function lanesAuto() {   // кадр шага «Полосы» → границы S.lanes.b + типы линий; возвращает { ok, msg }
+  const F = S.frozen, sc = Math.min(1, 900 / Math.max(F.w, F.h)), w = Math.round(F.w * sc), h = Math.round(F.h * sc);
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(F.cv, 0, 0, w, h);
+  const d = x.getImageData(0, 0, w, h).data, g = new Uint8Array(w * h);
+  for (let i = 0, j = 0; i < g.length; i++, j += 4) g[i] = (77 * d[j] + 150 * d[j + 1] + 29 * d[j + 2]) >> 8;
+  const r = laneAutoDetect(g, w, h, { maxLanes: CONFIG.lanes.maxLanes, farVp: true });   // штатив на мосту: точка схода может быть далеко над кадром — только при ≥ 3 согласованных линиях
+  if (!r.ok) return r;
+  const bs = r.lines.map(l => {
+    const xn = y => (l.a + l.b * y * h) / w, inside = y => xn(y) >= 0.02 && xn(y) <= 0.98;   // обе опорные точки — в кадре, чтобы их можно было потянуть пальцем
+    let ya = 0.95; while (ya > 0.6 && !inside(ya)) ya -= 0.01;
+    let yb = Math.max(0.3, ya - 0.4); while (yb < ya - 0.1 && !inside(yb)) yb += 0.01;
+    return { x1: clamp(xn(ya), 0.01, 0.99), y1: ya, x2: clamp(xn(yb), 0.01, 0.99), y2: yb };
+  });
+  const L = S.lanes; L.b = bs; L.n = bs.length - 1; L.mk = r.lines.map(l => l.kind);
+  ensureDefaults(); recalc();
+  const nm = { solid: 'сплошная', 'solid?': 'сплошная?', dash: 'прерывистая', inferred: 'достроена по ширине полос' };
+  const inf = r.lines.some(l => l.kind === 'inferred');
+  return { ok: true, msg: 'Найдено полос: ' + L.n + '. Границы слева направо: ' + r.lines.map(l => nm[l.kind] || l.kind).join(' | ') + '. Направление дороги определено по сходимости линий.' + (inf ? ' Достроенные линии проверь вручную.' : '') + ' Проверь границы и при необходимости потяни пальцем.' };
+}
+function laneAutoCard() {
+  const st = el('div', { class: S.lanes.autoMsg ? 'status ok' : 'status', text: S.lanes.autoMsg || '' });
+  const btn = el('button', { class: 'btn', type: 'button' }, '🛣 Найти полосы по разметке');
+  btn.addEventListener('click', async () => {
+    if (!S.frozen) { toast('Сначала зафиксируй кадр.'); return; }
+    btn.disabled = true; st.className = 'status'; st.textContent = 'Ищу разметку и направление дороги…'; await new Promise(r => setTimeout(r, 40));
+    try {
+      const r = lanesAuto(); S.lanes.autoMsg = r.ok ? r.msg : '';
+      if (r.ok) { toast('Полосы найдены: ' + S.lanes.n, 3500); renderStep(true); return; }
+      st.className = 'status warn'; st.textContent = r.msg;
+    } catch (e) { st.className = 'status bad'; st.textContent = 'Не получилось: ' + e.message; }
+    btn.disabled = false;
+  });
+  return el('div', { class: 'laneauto' }, btn, st);
+}
+/* ==== LANEAUTO:END ==== */
+
 /* ==== DASH:BEGIN ====
  * Режим «Регистратор»: только видеофайл; дорога и камера неизвестны, калибровки нет.
  * Скорость машины впереди = наклон её «координаты вдоль дороги» P(t) = Z(t) + D(t):
@@ -5915,19 +6077,19 @@ function wkClock(t) {
  * Наклон — Тейл–Сен по окну ~2 с. Ширина рамки почти не зависит от наклона и поворота камеры, поэтому качка и взгляд в зеркало её не портят;
  * резкая смена картинки (зеркало, солнце, тоннель), перестроение и перекрытие рамок обрабатываются отдельно (см. dashProcess).
  */
-const DASHC = { W: [1.8, 0.8, 2.55, 2.5], win: 2.2, minN: 7, minSpan: 0.8, detIv: 80, ocrIv: 330, maxMiss: 12, showMiss: 6, cutDiff: 30, egoGap: 4 };   // W: легковой · мото · автобус · грузовой, м
-const DS = { open: false, ui: null, vid: null, cv: null, g: null, sg: null, url: '', fov: 110, manual: 0, roi: null, drawRoi: false, a: null, content: null, bw: 0, bh: 0,
+const DASHC = { W: [1.8, 0.8, 2.55, 2.5], win: 2.2, minN: 7, minSpan: 0.8, detIv: 80, ocrIv: 220, maxMiss: 12, showMiss: 6, cutDiff: 30, egoGap: 4 };   // W: легковой · мото · автобус · грузовой, м
+const DS = { open: false, ui: null, vid: null, cv: null, g: null, sg: null, url: '', fov: 110, manual: 0, roi: null, road: null, lane: null, laneT: 0, laneMsg: '', sel: null, drawKind: null, onc: new Set(), a: null, content: null, bw: 0, bh: 0,
   ego: { p: [], pend: [] }, trk: [], nid: 0, q: [], det: { busy: false, last: -1e9 }, ocr: { busy: false, last: -1e9, w: null, p: null, txt: '', ok: false }, sig: null, cutUntil: -1, curT: 0, lastProc: -1, rv: 0, stT: 0, cutN: 0 };
 try { const f = +localStorage.getItem('dash.fov'); if (f >= 50 && f <= 170) DS.fov = f; } catch (_) {}
 
-function dashTS(pts) {   // Тейл–Сен: медиана наклонов по парам точек, разнесённых ≥ 0,3 с
-  const s = [];
-  for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) { const dt = pts[j].t - pts[i].t; if (dt >= 0.3) s.push((pts[j].P - pts[i].P) / dt); }
-  if (s.length < 6) return null;
+function dashTS(pts, key, dtMin, nMin) {   // Тейл–Сен: медиана наклонов по парам точек, разнесённых ≥ dtMin с
+  const s = []; key = key || 'P'; dtMin = dtMin || 0.3;
+  for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) { const dt = pts[j].t - pts[i].t; if (dt >= dtMin) s.push((pts[j][key] - pts[i][key]) / dt); }
+  if (s.length < (nMin || 6)) return null;
   s.sort((a, b) => a - b); const m = s.length >> 1;
   return s.length & 1 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
-function dashEgoReset() { DS.ego = { p: [], pend: [] }; DS.q = []; DS.trk = []; DS.sig = null; DS.cutUntil = -1; }
+function dashEgoReset() { DS.ego = { p: [], pend: [] }; DS.q = []; DS.trk = []; DS.sig = null; DS.cutUntil = -1; DS.onc = new Set(); }
 function dashEgoAdd(t, cands) {   // кандидаты — числа, прочитанные OCR; отбор по физике: не быстрее ~45 км/ч за секунду, одиночный сбой цифры отбрасывается
   const E = DS.ego, L = E.p[E.p.length - 1]; if (!cands.length) return false;
   let v;
@@ -6002,8 +6164,10 @@ function dashProcess(fr) {   // кадр детектора → треки → �
     const Z = f * C.W[k.c] / b.w;
     k.pts.push({ t, P: Z + e.D, Z });
     while (k.pts.length && t - k.pts[0].t > C.win) k.pts.shift();
-    if (k.pts.length < C.minN || t - k.pts[0].t < C.minSpan) continue;
-    const sl = dashTS(k.pts); if (sl == null) continue;
+    const span = t - k.pts[0].t, std = k.pts.length >= C.minN && span >= C.minSpan;
+    let fast = false; if (!std && k.pts.length >= 5 && span >= 0.45) { const zs = dashTS(k.pts.filter(p => t - p.t <= 0.6), 'Z', 0.2, 3); fast = zs != null && zs < -20; }   // сближение быстрее 20 м/с (встречная, стоящая при 80+ км/ч): хватает 0,45 с — машина в кадре меньше секунды
+    if (!std && !fast) continue;
+    const sl = dashTS(k.pts, 'P', std ? 0.3 : 0.2, std ? 6 : 3); if (sl == null) continue;
     const v = sl * 3.6, res = k.pts.map(p => p.P - sl * (p.t - k.pts[0].t)).sort((x, y) => x - y), md = res[res.length >> 1];
     const mad = res.map(x => Math.abs(x - md)).sort((x, y) => x - y)[res.length >> 1], mz = k.pts.reduce((s, p) => s + p.Z, 0) / k.pts.length;
     k.q = mad / mz;
@@ -6014,11 +6178,11 @@ function dashProcess(fr) {   // кадр детектора → треки → �
   DS.trk = T.filter(k => k.miss <= C.maxMiss && k.cx > -50 && k.cx < bw + 50);
   DS.lastProc = t;
 }
-function dashDrain() {   // кадр детектора ждёт, пока OCR дочитает скорость до его момента (или 1,2 с)
+function dashDrain() {   // кадр детектора ждёт, пока OCR дочитает скорость до его момента (или 0,35 с: дальше считаем по последней прочитанной скорости)
   const q = DS.q, p = DS.ego.p, lastT = p.length ? p[p.length - 1].t : -1, now = performance.now();
   while (q.length) {
     const fr = q[0];
-    if (DS.manual > 0 || fr.t <= lastT + 0.001 || now - fr.wall > 1200 || !DS.roi) { q.shift(); dashProcess(fr); } else break;
+    if (DS.manual > 0 || fr.t <= lastT + 0.001 || now - fr.wall > 350 || !DS.roi) { q.shift(); dashProcess(fr); } else break;
   }
 }
 
@@ -6038,7 +6202,7 @@ async function dashLoad(file) {
   v.pause(); DS.url = URL.createObjectURL(file); v.muted = true; v.loop = false; v.src = DS.url;
   await new Promise((res, rej) => { const ok = () => { v.removeEventListener('error', bad); res(); }, bad = () => { v.removeEventListener('loadeddata', ok); rej(new Error('Браузер не смог открыть этот файл. Нужен MP4 (H.264) или WebM.')); }; v.addEventListener('loadeddata', ok, { once: true }); v.addEventListener('error', bad, { once: true }); setTimeout(() => { if (v.readyState >= 2) res(); else rej(new Error('Видео не загрузилось.')); }, 15000); });
   await new Promise(r => { v.addEventListener('seeked', r, { once: true }); v.currentTime = 0.05; setTimeout(r, 2000); });
-  DS.content = dashContent(v); DS.roi = null; dashEgoReset(); dashMsg();
+  DS.content = dashContent(v); DS.roi = null; DS.road = null; DS.lane = null; dashEgoReset(); dashMsg();
 }
 async function dashOcrWorker() {
   const O = DS.ocr; if (O.w) return O.w;
@@ -6104,6 +6268,33 @@ async function dashDetect(t) {
   D.busy = false;
 }
 
+/* ---------- полосы по разметке в кадре регистратора ---------- */
+function dashLaneScan() {   // раз в ~0,7 с: разметка в «области дороги» → линии (сплошная / прерывистая) + направление дороги (точка схода)
+  const r = DS.road, v = DS.vid; if (!r || !v.videoWidth) return; DS.laneT = performance.now();
+  const vw = v.videoWidth, vh = v.videoHeight, sw0 = r.w * vw, sh0 = r.h * vh, s = Math.min(1, 520 / sw0), w = Math.round(sw0 * s), h = Math.round(sh0 * s), rx0 = r.x * vw, ry0 = r.y * vh;
+  if (w < 64 || h < 32) return;
+  const c = DS.lc || (DS.lc = document.createElement('canvas')); c.width = w; c.height = h;
+  const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(v, rx0, ry0, sw0, sh0, 0, 0, w, h);
+  const d = g.getImageData(0, 0, w, h).data, gr = new Uint8Array(w * h);
+  for (let i = 0, j = 0; i < gr.length; i++, j += 4) gr[i] = (77 * d[j] + 150 * d[j + 1] + 29 * d[j + 2]) >> 8;
+  let res; try { res = laneAutoDetect(gr, w, h, { top: 0, bot: 1, maxLanes: 5, vpMin: (-0.15 * vh - ry0) * s }); } catch (e) { return; }   // точка схода не выше 15 % высоты кадра над ним
+  if (!res.ok) { if (DS.lane && performance.now() - DS.lane.at > 3000) DS.lane = null; DS.laneMsg = res.msg; return; }
+  const yr = ry0 + 0.8 * sh0, prev = DS.lane ? DS.lane.lines : [];
+  const lines = res.lines.map(l => {   // из координат вырезки — в пиксели видео: x = a + b·y
+    const a = rx0 + l.a / s - l.b * ry0, n = { a, b: l.b, kind: l.kind }, p = prev.find(q => Math.abs((q.a + q.b * yr) - (a + l.b * yr)) < 0.03 * vw);
+    if (p) { n.a = 0.5 * a + 0.5 * p.a; n.b = 0.5 * l.b + 0.5 * p.b; if (l.kind === 'inferred') n.kind = p.kind; }   // сглаживание: линия не дёргается между сканами
+    return n;
+  });
+  DS.lane = { lines, vp: { x: rx0 + res.vp.x / s, y: ry0 + res.vp.y / s }, at: performance.now(), yt: ry0, yb: ry0 + sh0 }; DS.laneMsg = '';
+}
+function dashLaneOf(k) {   // полоса машины относительно своей: 0 — своя, 1 / 2 — справа, −1… — слева. Своя — между линиями, зажавшими середину кадра у низа области дороги
+  const Ln = DS.lane, v = DS.vid; if (!Ln || Ln.lines.length < 2 || !DS.bw || !v.videoWidth) return null;
+  const kb = DS.bw / v.videoWidth, xv = k.cx / kb, yv = (k.cy + k.h / 2) / kb, cr = DS.content, xe = (cr ? (cr.x0 + cr.x1) / 2 : 0.5) * v.videoWidth;
+  let e = -1; for (let i = 0; i < Ln.lines.length; i++) if (Ln.lines[i].a + Ln.lines[i].b * Ln.yb <= xe) e = i;
+  if (e < 0 || e >= Ln.lines.length - 1) return null;
+  let j = -1; for (let i = 0; i < Ln.lines.length; i++) if (Ln.lines[i].a + Ln.lines[i].b * yv <= xv) j = i;
+  return { r: j - e };
+}
 /* ---------- кадровый цикл и рисование ---------- */
 function dashLoop(now, md) {
   const v = DS.vid; if (!DS.open) return;
@@ -6111,6 +6302,7 @@ function dashLoop(now, md) {
   if (!v.paused && !v.ended) {
     if (!DS.det.busy && performance.now() - DS.det.last >= DASHC.detIv) dashDetect(t);
     if (!DS.ocr.busy && performance.now() - DS.ocr.last >= DASHC.ocrIv) dashOcr(t);
+    if (DS.road && performance.now() - DS.laneT >= 700) dashLaneScan();
     dashDrain();
   }
   dashDraw();
@@ -6123,24 +6315,38 @@ function dashDraw() {
   if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
   g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
   if (!v.videoWidth) return;
-  const R = dashRect(), r = DS.roi;
-  if (r) { g.lineWidth = 2; g.strokeStyle = DS.ocr.ok ? '#35d07f' : '#ffd23f'; g.strokeRect(R.x + r.x * v.videoWidth * R.k, R.y + r.y * v.videoHeight * R.k, r.w * v.videoWidth * R.k, r.h * v.videoHeight * R.k); }
+  const R = dashRect(), box = (r, col, dash) => { if (!r) return; g.lineWidth = 2; g.strokeStyle = col; g.setLineDash(dash || []); g.strokeRect(R.x + r.x * v.videoWidth * R.k, R.y + r.y * v.videoHeight * R.k, r.w * v.videoWidth * R.k, r.h * v.videoHeight * R.k); g.setLineDash([]); };
+  box(DS.roi, DS.ocr.ok ? '#35d07f' : '#ffd23f'); box(DS.road, '#4aa3ff', [8, 6]); box(DS.sel, DS.drawKind === 'road' ? '#4aa3ff' : '#ffd23f', [4, 4]);
+  const Ln = DS.lane;
+  if (Ln && DS.road) {   // линии разметки: сплошная — сплошной линией, прерывистая — пунктиром, достроенная — точками
+    g.lineWidth = 2.5;
+    for (const l of Ln.lines) {
+      g.strokeStyle = l.kind === 'inferred' ? '#4aa3ff' : '#ffd23f'; g.setLineDash(l.kind === 'dash' ? [12, 8] : l.kind === 'inferred' ? [3, 7] : []);
+      g.beginPath(); g.moveTo(R.x + (l.a + l.b * Ln.yt) * R.k, R.y + Ln.yt * R.k); g.lineTo(R.x + (l.a + l.b * Ln.yb) * R.k, R.y + Ln.yb * R.k); g.stroke();
+    }
+    g.setLineDash([]);
+  }
   if (!DS.bw) return;
   const kx = v.videoWidth * R.k / DS.bw, ky = v.videoHeight * R.k / DS.bh, ego = dashEgoAt(DS.curT);
   g.textAlign = 'center'; g.textBaseline = 'middle';
   for (const k of DS.trk) {
-    if (k.sp == null || k.miss > DASHC.showMiss || DS.curT - k.spT > 2.5 || k.hits < 8 || k.sp < -15) continue;   // встречные (скорость < 0) и «не успели измерить» не показываем
+    if (k.sp == null || k.miss > DASHC.showMiss || DS.curT - k.spT > 2.5 || k.hits < 6 || k.sp < -260) continue;   // «не успели измерить» не показываем; отрицательная скорость — встречная
     const ex = clamp(DS.curT - k.t, 0, 0.5), cx = R.x + (k.cx + k.vx * ex) * kx, top = R.y + (k.cy + k.vy * ex - k.h / 2) * ky, bwid = k.w * kx;
-    const fs = clamp(bwid * 0.42, 13, 26), sp = Math.max(0, k.sp), txt = (k.q > 0.07 ? '~' : '') + Math.round(sp), rel = ego ? k.sp - ego.v : 0;
-    const col = Math.abs(rel) <= 3 || !ego ? '#ffd23f' : rel > 0 ? '#35d07f' : '#ff5a5f';   // зелёная ▲ — уезжает, красная ▼ — догоняем, жёлтая = — та же скорость
+    const onc = k.sp < -10, ln = dashLaneOf(k), fs = clamp(bwid * 0.42, 13, 26), sp = Math.abs(k.sp), rel = onc ? -1 : ego ? k.sp - ego.v : 0;
+    if (onc && k.hits >= 12) DS.onc.add(k.id);
+    const txt = (k.q > 0.07 || (onc && ln && ln.r >= 0) ? '~' : '') + Math.round(sp), tag = onc ? 'встр.' : ln ? (ln.r === 0 ? 'своя' : ln.r > 0 ? 'справа ' + ln.r : 'слева') : '';   // встречная в своей/правой полосе — подозрительно, «~»
+    const col = onc ? '#4aa3ff' : Math.abs(rel) <= 3 || !ego ? '#ffd23f' : rel > 0 ? '#35d07f' : '#ff5a5f';   // синяя ▼ — встречная, зелёная ▲ — уезжает, красная ▼ — догоняем, жёлтая = — та же скорость
     g.font = '700 ' + fs + 'px system-ui,sans-serif';
-    const tw = g.measureText(txt).width, bw2 = tw + fs * 1.5 + 12, bh2 = fs * 1.5, x = cx - bw2 / 2, y = Math.max(R.y + 2, top - bh2 - 6);
+    const tw = g.measureText(txt).width; g.font = '600 ' + Math.round(fs * 0.55) + 'px system-ui,sans-serif'; const gw = tag ? g.measureText(tag).width + 8 : 0; g.font = '700 ' + fs + 'px system-ui,sans-serif';
+    const bw2 = tw + gw + fs * 1.5 + 12, bh2 = fs * 1.5, x = cx - bw2 / 2, y = Math.max(R.y + 2, top - bh2 - 6);
     g.globalAlpha = k.miss ? 0.55 : 1; g.fillStyle = 'rgba(8,10,14,.78)'; g.beginPath(); g.roundRect ? g.roundRect(x, y, bw2, bh2, 8) : g.rect(x, y, bw2, bh2); g.fill();
     const ax = x + fs * 0.85 + 4, ay = y + bh2 / 2, s = fs * 0.5; g.fillStyle = col; g.beginPath();
     if (Math.abs(rel) <= 3 || !ego) { g.rect(ax - s, ay - s * 0.55, s * 2, s * 0.35); g.rect(ax - s, ay + s * 0.2, s * 2, s * 0.35); }
     else if (rel > 0) { g.moveTo(ax, ay - s); g.lineTo(ax + s, ay + s * 0.7); g.lineTo(ax - s, ay + s * 0.7); g.closePath(); }
     else { g.moveTo(ax, ay + s); g.lineTo(ax + s, ay - s * 0.7); g.lineTo(ax - s, ay - s * 0.7); g.closePath(); }
-    g.fill(); g.fillStyle = '#fff'; g.textAlign = 'left'; g.fillText(txt, ax + s + 8, ay + 1); g.textAlign = 'center'; g.globalAlpha = 1;
+    g.fill(); g.fillStyle = '#fff'; g.textAlign = 'left'; g.fillText(txt, ax + s + 8, ay + 1);
+    if (tag) { g.font = '600 ' + Math.round(fs * 0.55) + 'px system-ui,sans-serif'; g.fillStyle = onc ? '#4aa3ff' : '#9fb0c3'; g.fillText(tag, ax + s + 8 + tw + 6, ay + 1); }
+    g.textAlign = 'center'; g.globalAlpha = 1;
   }
 }
 function dashMsg() {
@@ -6148,6 +6354,7 @@ function dashMsg() {
   const e = dashEgoAt(DS.curT), L = [];
   L.push(DS.manual > 0 ? 'Своя скорость задана вручную: ' + DS.manual + ' км/ч' : DS.roi ? 'Своя скорость: ' + (e ? fmt(e.v, 0) + ' км/ч' : 'нет (область не читается)') + (DS.ocr.txt ? ' · OCR: «' + DS.ocr.txt.slice(0, 24) + '»' : '') : 'Выдели область скорости на кадре или введи скорость вручную.');
   L.push('машин в кадре: ' + DS.trk.filter(k => k.sp != null && k.miss <= DASHC.showMiss).length + ' · детектор: ' + (VD.st === 'ready' ? vdName() : VD.st === 'loading' ? 'загрузка…' : 'не готов') + (DS.cutN ? ' · резких смен кадра: ' + DS.cutN : '') + (DS.content ? ' · чёрные поля обрезаны' : ''));
+  L.push(!DS.road ? 'Область дороги не задана: полосы не определяются (скорости считаются всё равно).' : DS.lane ? 'Разметка: ' + DS.lane.lines.map(l => l.kind === 'solid' || l.kind === 'solid?' ? 'сплошная' : l.kind === 'dash' ? 'прерывистая' : 'достроена').join(' | ') + ' · встречных: ' + DS.onc.size : (DS.laneMsg || 'Ищу разметку…'));
   st.textContent = L.join('\n');
 }
 function dashPtr(e) { const r = DS.cv.getBoundingClientRect(), R = dashRect(), v = DS.vid; return { x: clamp((e.clientX - r.left - R.x) / (v.videoWidth * R.k), 0, 1), y: clamp((e.clientY - r.top - R.y) / (v.videoHeight * R.k), 0, 1) }; }
@@ -6161,13 +6368,13 @@ function dashCard(box) {
 function dashBuild() {
   if (!document.getElementById('dashCss')) document.head.append(el('style', { id: 'dashCss', text: '#dash{position:fixed;inset:0;z-index:60;background:#000;display:flex;flex-direction:column;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}#dash[hidden]{display:none}#dash .dh{display:flex;align-items:center;gap:10px;padding:6px 12px;background:var(--panel);border-bottom:1px solid var(--line)}#dash .dh b{flex:1}#dash .ds{position:relative;flex:1;min-height:0;background:#000}#dash video,#dash canvas{position:absolute;inset:0;width:100%;height:100%}#dash video{object-fit:contain}#dash canvas{touch-action:none}#dash .dp{display:flex;flex-direction:column;gap:8px;padding:8px 12px;background:var(--panel);border-top:1px solid var(--line)}#dash .dr{display:flex;gap:8px;flex-wrap:wrap;align-items:center}#dash .dr .btn{flex:1;min-width:110px}#dash .dr .fld{flex:1;min-width:150px}#dashSt{white-space:pre-line;font-size:13px;color:var(--mut)}#dash input[type=range]{flex:1;min-width:120px}' }));
   const vid = el('video', { playsinline: '', muted: '' }), cv = el('canvas'), rng = el('input', { type: 'range', min: 0, max: 1000, value: 0 });
-  const fin = el('input', { type: 'file', accept: 'video/*', hidden: '' }), bPlay = el('button', { class: 'btn primary', type: 'button' }, '▶ Старт'), bRoi = el('button', { class: 'btn', type: 'button' }, '🔢 Область скорости');
+  const fin = el('input', { type: 'file', accept: 'video/*', hidden: '' }), bPlay = el('button', { class: 'btn primary', type: 'button' }, '▶ Старт'), bRoi = el('button', { class: 'btn', type: 'button' }, '🔢 Область скорости'), bRoad = el('button', { class: 'btn', type: 'button' }, '🛣 Область дороги');
   DS.vid = vid; DS.cv = cv; DS.g = cv.getContext('2d'); DS.sg = Object.assign(document.createElement('canvas'), { width: 32, height: 18 }).getContext('2d', { willReadFrequently: true });
   const ui = el('div', { id: 'dash', hidden: '' },
     el('div', { class: 'dh' }, el('b', { text: 'Регистратор: скорость машин впереди' }), el('button', { class: 'icon', type: 'button', 'aria-label': 'Закрыть', onclick: dashClose }, '✕')),
     el('div', { class: 'ds' }, vid, cv),
     el('div', { class: 'dp' },
-      el('div', { class: 'dr' }, el('button', { class: 'btn', type: 'button', onclick: () => fin.click() }, '🎞 Видео'), bRoi, bPlay,
+      el('div', { class: 'dr' }, el('button', { class: 'btn', type: 'button', onclick: () => fin.click() }, '🎞 Видео'), bRoi, bRoad, bPlay,
         el('button', { class: 'btn', type: 'button', onclick: () => { vid.currentTime = 0; dashEgoReset(); } }, '↺'), rng),
       el('div', { class: 'dr' },
         numField('Угол обзора камеры по горизонтали', DS.fov, (x, inp) => { if (x >= 50 && x <= 170) { DS.fov = x; inp.style.outline = ''; try { localStorage.setItem('dash.fov', x); } catch (_) {} } else inp.style.outline = '1px solid var(--bad)'; }, '°'),
@@ -6175,7 +6382,9 @@ function dashBuild() {
       el('div', { id: 'dashSt', text: '' }), fin));
   document.body.append(ui); DS.ui = ui;
   fin.addEventListener('change', async e => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (!f) return; try { await dashLoad(f); rng.value = 0; dashDraw(); } catch (err) { toast(err.message, 5000); } });
-  bRoi.addEventListener('click', () => { if (!vid.videoWidth) { toast('Сначала открой видео.'); return; } vid.pause(); DS.drawRoi = !DS.drawRoi; bRoi.classList.toggle('on', DS.drawRoi); if (DS.drawRoi) toast('Обведи пальцем цифры своей скорости: спидометр, навигатор или нижнюю панель.', 4500); });
+  const setDraw = kind => { DS.drawKind = kind; bRoi.classList.toggle('on', kind === 'speed'); bRoad.classList.toggle('on', kind === 'road'); if (kind) vid.pause(); dashDraw(); };
+  bRoi.addEventListener('click', () => { if (!vid.videoWidth) { toast('Сначала открой видео.'); return; } setDraw(DS.drawKind === 'speed' ? null : 'speed'); if (DS.drawKind) toast('Обведи цифры своей скорости: спидометр, навигатор или нижнюю панель.', 4500); });
+  bRoad.addEventListener('click', () => { if (!vid.videoWidth) { toast('Сначала открой видео.'); return; } setDraw(DS.drawKind === 'road' ? null : 'road'); if (DS.drawKind) toast('Обведи участок дороги с разметкой: от горизонта до капота, без салона и приборной панели.', 5500); });
   bPlay.addEventListener('click', async () => {
     if (!vid.videoWidth) { toast('Сначала открой видео.'); return; }
     if (!vid.paused) { vid.pause(); return; }
@@ -6184,7 +6393,7 @@ function dashBuild() {
     if (VD.st === 'loading') { toast('Загрузка детектора машин…', 3000); await vdWait(60000); }
     if (VD.st !== 'ready') { toast('Детектор машин не загрузился (нужен интернет или models/yolov8n.onnx).', 6000); return; }
     const [bw, bh] = VD.mode === 'worker' ? vdBmpSize(vid.videoWidth, vid.videoHeight) : [vid.videoWidth, vid.videoHeight]; await vdWarm(bw, bh);
-    DS.drawRoi = false; bRoi.classList.remove('on'); vid.playbackRate = 1;
+    setDraw(null); vid.playbackRate = 1;
     try { await vid.play(); } catch (_) { toast('Видео не запустилось: нажми ещё раз.'); }
   });
   vid.addEventListener('play', () => { bPlay.textContent = '⏸ Пауза'; });
@@ -6192,12 +6401,13 @@ function dashBuild() {
   vid.addEventListener('timeupdate', () => { if (vid.duration) rng.value = Math.round(1000 * vid.currentTime / vid.duration); });
   vid.addEventListener('seeking', () => { if (!DS.seekSelf) { dashEgoReset(); } });
   rng.addEventListener('input', () => { if (vid.duration) vid.currentTime = vid.duration * rng.value / 1000; });
-  cv.addEventListener('pointerdown', e => { if (!DS.drawRoi) return; cv.setPointerCapture(e.pointerId); DS.a = dashPtr(e); DS.roi = { x: DS.a.x, y: DS.a.y, w: 0, h: 0 }; dashDraw(); });
-  cv.addEventListener('pointermove', e => { if (!DS.a) return; const p = dashPtr(e); DS.roi = { x: Math.min(p.x, DS.a.x), y: Math.min(p.y, DS.a.y), w: Math.abs(p.x - DS.a.x), h: Math.abs(p.y - DS.a.y) }; dashDraw(); });
+  cv.addEventListener('pointerdown', e => { if (!DS.drawKind) return; cv.setPointerCapture(e.pointerId); DS.a = dashPtr(e); DS.sel = { x: DS.a.x, y: DS.a.y, w: 0, h: 0 }; dashDraw(); });
+  cv.addEventListener('pointermove', e => { if (!DS.a) return; const p = dashPtr(e); DS.sel = { x: Math.min(p.x, DS.a.x), y: Math.min(p.y, DS.a.y), w: Math.abs(p.x - DS.a.x), h: Math.abs(p.y - DS.a.y) }; dashDraw(); });
   cv.addEventListener('pointerup', () => {
-    if (!DS.a) return; DS.a = null;
-    if (DS.roi.w < 0.01 || DS.roi.h < 0.01) { DS.roi = null; dashDraw(); return; }
-    DS.drawRoi = false; bRoi.classList.remove('on'); dashEgoReset(); DS.ocr.ok = false; DS.ocr.txt = '…'; dashDraw(); dashOcr(vid.currentTime).then(() => { dashMsg(); dashDraw(); });   // пробное чтение сразу
+    if (!DS.a) return; DS.a = null; const s = DS.sel; DS.sel = null;
+    if (!s || s.w < 0.01 || s.h < 0.01) { dashDraw(); return; }
+    if (DS.drawKind === 'road') { DS.road = s; DS.lane = null; DS.laneMsg = ''; setDraw(null); dashLaneScan(); dashMsg(); return; }   // сразу ищем разметку на этом кадре
+    DS.roi = s; setDraw(null); dashEgoReset(); DS.ocr.ok = false; DS.ocr.txt = '…'; dashOcr(vid.currentTime).then(() => { dashMsg(); dashDraw(); });   // пробное чтение скорости сразу
   });
   window.addEventListener('resize', () => { if (DS.open) dashDraw(); });
 }
